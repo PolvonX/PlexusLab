@@ -125,8 +125,19 @@ class BrainAgent:
 
     # ------------------------------------------------------------------
     async def _run_loop(
-        self, *, chat_id: int, message_id: int | None, requester_id: int, prompt: str, iteration: int
+        self,
+        *,
+        chat_id: int,
+        message_id: int | None,
+        requester_id: int,
+        prompt: str,
+        iteration: int,
+        resume_retry_done: bool = False,
     ) -> None:
+        """resume_retry_done защищает от бесконечного цикла: --resume может
+        не найти сессию (в этой среде — регулярно, см. docs/superpowers/plans/
+        2026-08-13-cortex-brain.md, Task 4 «Открытый вопрос»), и тогда мы один
+        раз откатываемся на свежую сессию с тем же prompt, а не сдаёмся сразу."""
         deps = self.deps
         if iteration > deps.config.brain_max_iterations:
             await deps.gateway.reply(
@@ -137,7 +148,9 @@ class BrainAgent:
             return
 
         session_flag = self.session.session_flag(chat_id)
+        is_resume = session_flag.startswith("--resume")
         typing = asyncio.create_task(self._keep_typing(chat_id))
+        result = None
         try:
             async with self._locks[chat_id]:
                 result = await deps.runner.run(
@@ -151,17 +164,32 @@ class BrainAgent:
                     driver=deps.config.brain_driver,
                 )
         except AgentRunError as exc:
-            await deps.gateway.reply(
-                chat_id,
-                fmt.agent_error_report(
-                    agent="Cortex", project=_BRAIN_PROJECT, error=exc,
-                    stderr_limit=deps.config.stderr_report_chars,
-                ),
-                reply_to=message_id,
-            )
-            return
+            if is_resume and not resume_retry_done:
+                log.warning(
+                    "Мозг: --resume не нашёл сессию чата %s, начинаю новую: %s", chat_id, exc
+                )
+                self.session.reset(chat_id)
+            else:
+                await deps.gateway.reply(
+                    chat_id,
+                    fmt.agent_error_report(
+                        agent="Cortex", project=_BRAIN_PROJECT, error=exc,
+                        stderr_limit=deps.config.stderr_report_chars,
+                    ),
+                    reply_to=message_id,
+                )
+                return
         finally:
             typing.cancel()
+
+        if result is None:
+            # Сюда попадаем только после сброса сессии на строке выше —
+            # тот же prompt, но уже со свежим --session-id.
+            await self._run_loop(
+                chat_id=chat_id, message_id=message_id, requester_id=requester_id,
+                prompt=prompt, iteration=iteration, resume_retry_done=True,
+            )
+            return
 
         self.session.mark_used(chat_id)
 

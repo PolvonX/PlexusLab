@@ -16,7 +16,9 @@ from cortex.brain.tools.hr import FireEmployeeTool
 from cortex.brain.tools.read import GetEmployeeTool, GetStatusTool, ListProjectsTool, ListStaffTool
 from cortex.config import Config
 from cortex.context import ChatHistory
+from cortex.errors import AgentRunError
 from cortex.hr import HRService
+from cortex.models import AgentResult
 from cortex.runtime import AgentRunner
 from cortex.telegram.bot_pool import BotPool
 
@@ -236,3 +238,72 @@ async def test_brain_never_runs_claude_with_project_root_as_cwd(
     workspace = recorder.calls[0]["workspace"]
     assert workspace != cfg.root
     assert workspace.name == "brain_workspace"
+
+
+class _ResumeFailsOnceRunner:
+    """Воспроизводит то, что реально происходит с claude в этой среде:
+    --resume регулярно не находит сессию, созданную через --session-id
+    (см. Task 4 «Открытый вопрос» в плане). Второй вызов, уже со свежим
+    --session-id, отрабатывает нормально."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def run(self, *, session_flag: str, **kwargs) -> AgentResult:
+        self.calls.append(session_flag)
+        if session_flag.startswith("--resume"):
+            raise AgentRunError(
+                "No conversation found with session ID: ...", returncode=1, duration=0.1
+            )
+        return AgentResult(
+            stdout="Всё в порядке, продолжаю.", stderr="", returncode=0, duration=0.5, command="claude"
+        )
+
+
+async def test_resume_failure_falls_back_to_a_fresh_session_once(
+    tmp_path, secrets, registry, workspaces, state
+):
+    cfg = _config_with_brain_driver(tmp_path, secrets, tmp_path / "counter.txt")
+    gateway = _FakeGateway()
+    deps = _make_deps(cfg, registry, workspaces, state, gateway)
+    runner = _ResumeFailsOnceRunner()
+    deps.runner = runner
+    agent = _agent(deps)
+
+    # Помечаем чат как "уже видели" — session_flag() сразу вернёт --resume,
+    # как оно и происходит на втором сообщении в реальном разговоре.
+    agent.session.mark_used(CHAT)
+
+    await agent.handle_message(chat_id=CHAT, message_id=1, text="как ты там?", requester_id=1001)
+
+    assert len(runner.calls) == 2
+    assert runner.calls[0].startswith("--resume")
+    assert runner.calls[1].startswith("--session-id")
+    assert any("Всё в порядке" in m for m in gateway.messages)
+
+
+async def test_resume_failure_does_not_retry_forever(tmp_path, secrets, registry, workspaces, state):
+    """Если и свежая сессия падает — сдаёмся с отчётом об ошибке, а не
+    зацикливаемся: AgentRunError на --session-id уже не считается 'резюме
+    не нашлось', это реальный сбой."""
+
+    class _AlwaysFailsRunner:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def run(self, **kwargs):
+            self.calls += 1
+            raise AgentRunError("что-то настоящее сломалось", returncode=1, duration=0.1)
+
+    cfg = _config_with_brain_driver(tmp_path, secrets, tmp_path / "counter.txt")
+    gateway = _FakeGateway()
+    deps = _make_deps(cfg, registry, workspaces, state, gateway)
+    runner = _AlwaysFailsRunner()
+    deps.runner = runner
+    agent = _agent(deps)
+    agent.session.mark_used(CHAT)
+
+    await agent.handle_message(chat_id=CHAT, message_id=1, text="как ты там?", requester_id=1001)
+
+    assert runner.calls == 2  # один --resume, один --session-id — и остановились
+    assert any("не справился" in m for m in gateway.messages)
