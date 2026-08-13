@@ -126,3 +126,77 @@ async def test_prompt_file_is_cleaned_up(tmp_path, secrets):
     )
 
     assert list((cfg.data_dir / "prompts_tmp").glob("*.md")) == []
+
+
+async def test_system_prompt_is_passed_through_safely(tmp_path, secrets):
+    """system_prompt reaches the child process even with spaces/quotes, same
+    trick as {prompt}: it must not be shell-tokenized."""
+    echo_argv = tmp_path / "echo_argv.py"
+    echo_argv.write_text(
+        "import sys\n"
+        "print('ARGC=' + str(len(sys.argv)))\n"
+        "print('SYS=' + sys.argv[sys.argv.index('--system-prompt') + 1])\n",
+        encoding="utf-8",
+    )
+    cfg = _config_with(
+        tmp_path,
+        secrets,
+        f'"{sys.executable}" "{echo_argv}" --system-prompt "{{system_prompt}}"',
+    )
+    workspace = tmp_path / "projects" / "sports_api"
+    workspace.mkdir(parents=True)
+
+    result = await AgentRunner(cfg).run(
+        prompt="x",
+        workspace=workspace,
+        agent="Cortex",
+        project="sports_api",
+        system_prompt='Ты Cortex. Говори "коротко и по делу".\nВторая строка.',
+    )
+
+    assert 'SYS=Ты Cortex. Говори "коротко и по делу".' in result.stdout
+
+
+async def test_session_flag_is_appended_as_plain_tokens(tmp_path, secrets):
+    echo_argv = tmp_path / "echo_argv.py"
+    echo_argv.write_text("import sys\nprint(' '.join(sys.argv[1:]))\n", encoding="utf-8")
+    cfg = _config_with(
+        tmp_path, secrets, f'"{sys.executable}" "{echo_argv}" {{session_flag}}'
+    )
+    workspace = tmp_path / "projects" / "sports_api"
+    workspace.mkdir(parents=True)
+
+    result = await AgentRunner(cfg).run(
+        prompt="x",
+        workspace=workspace,
+        agent="Cortex",
+        project="sports_api",
+        session_flag="--resume 11111111-1111-1111-1111-111111111111",
+    )
+
+    assert "--resume 11111111-1111-1111-1111-111111111111" in result.stdout
+
+
+async def test_explicit_driver_overrides_the_configured_default(tmp_path, secrets):
+    """The brain passes its own driver (Config.brain_driver) — the default
+    agent_runner.driver must not be consulted when one is given explicitly."""
+    echo_argv = tmp_path / "echo_argv.py"
+    echo_argv.write_text("import sys\nprint('OTHER_DRIVER_RAN')\n", encoding="utf-8")
+
+    cfg = _config_with(tmp_path, secrets, "this-command-does-not-exist")
+    workspace = tmp_path / "projects" / "sports_api"
+    workspace.mkdir(parents=True)
+
+    from cortex.config import RunnerDriver
+
+    override = RunnerDriver(
+        name="other", command=f'"{sys.executable}" "{echo_argv}"', prompt_via_stdin=False, env={}
+    )
+
+    result = await AgentRunner(cfg).run(
+        prompt="x", workspace=workspace, agent="Cortex", project="sports_api", driver=override
+    )
+
+    assert "OTHER_DRIVER_RAN" in result.stdout
+
+

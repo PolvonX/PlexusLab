@@ -14,7 +14,7 @@ import time
 import uuid
 from pathlib import Path
 
-from ..config import Config
+from ..config import Config, RunnerDriver
 from ..errors import AgentRunError
 from ..logging_setup import get_logger
 from ..models import AgentResult
@@ -27,6 +27,7 @@ _DECODE_KW = {"encoding": "utf-8", "errors": "replace"}
 #: Промпт подставляется в argv не через строку команды, а по метке: иначе
 #: кавычки и переводы строк внутри промпта разнесли бы shlex.
 _PROMPT_MARK = "\x00PLEXUS_PROMPT\x00"
+_SYSTEM_PROMPT_MARK = "\x00PLEXUS_SYSTEM_PROMPT\x00"
 
 #: Предел командной строки Windows (CreateProcess) — 32 767 символов.
 #: Держим запас: превысить его значит получить невнятный OSError.
@@ -45,16 +46,20 @@ class AgentRunner:
     def _build_argv(
         self,
         *,
+        driver: RunnerDriver,
         prompt: str,
         prompt_file: Path,
         workspace: Path,
         agent: str,
         project: str,
+        system_prompt: str,
+        session_flag: str,
     ) -> list[str]:
-        driver = self.config.runner_driver
         rendered = driver.command.format(
             prompt_file=str(prompt_file),
             prompt=_PROMPT_MARK,
+            system_prompt=_SYSTEM_PROMPT_MARK,
+            session_flag=session_flag,
             workspace=str(workspace),
             # cwd процесса — папка проекта, поэтому относительные пути к
             # скриптам самого Cortex здесь не работают: нужен {root}.
@@ -67,20 +72,21 @@ class AgentRunner:
         # shlex в non-posix режиме оставляет кавычки — снимаем их вручную.
         argv = [arg.strip('"') for arg in argv if arg]
 
-        if not any(arg == _PROMPT_MARK for arg in argv):
+        replacements = {_PROMPT_MARK: prompt, _SYSTEM_PROMPT_MARK: system_prompt}
+        if not any(arg in replacements for arg in argv):
             return argv
 
-        total = sum(len(a) for a in argv) + len(prompt) + len(argv)
+        total = sum(len(a) for a in argv) + len(prompt) + len(system_prompt) + len(argv)
         if total > _ARGV_LIMIT:
             raise AgentRunError(
                 f"Промпт не помещается в командную строку: {total} символов при "
                 f"лимите Windows ~{_ARGV_LIMIT}. Уменьши context.history_chars_budget "
                 "или context.workspace_tree_max_entries в config.yaml, либо переведи "
                 "драйвер на prompt_via_stdin.",
-                command=" ".join(a for a in argv if a != _PROMPT_MARK),
+                command=" ".join(a for a in argv if a not in replacements),
             )
 
-        return [prompt if arg == _PROMPT_MARK else arg for arg in argv]
+        return [replacements.get(arg, arg) for arg in argv]
 
     # ------------------------------------------------------------------
     async def run(
@@ -91,23 +97,32 @@ class AgentRunner:
         agent: str,
         project: str,
         timeout: int | None = None,
+        system_prompt: str | None = None,
+        session_flag: str = "",
+        driver: RunnerDriver | None = None,
     ) -> AgentResult:
-        driver = self.config.runner_driver
+        driver = driver or self.config.runner_driver
         timeout = timeout or self.config.runner_timeout
 
         prompt_file = self._tmp_dir / f"{agent}-{uuid.uuid4().hex[:8]}.md"
         prompt_file.write_text(prompt, encoding="utf-8")
 
         argv = self._build_argv(
+            driver=driver,
             prompt=prompt,
             prompt_file=prompt_file,
             workspace=workspace,
             agent=agent,
             project=project,
+            system_prompt=system_prompt or "",
+            session_flag=session_flag,
         )
         # В лог и в отчёт об ошибке идёт команда без тела промпта.
         printable = " ".join(
-            f"<промпт {len(prompt)} симв.>" if arg == prompt else arg for arg in argv
+            f"<промпт {len(prompt)} симв.>" if arg == prompt
+            else f"<system_prompt {len(system_prompt or '')} симв.>" if system_prompt and arg == system_prompt
+            else arg
+            for arg in argv
         )
         log.info("[%s/%s] запуск: %s", project, agent, printable)
 
