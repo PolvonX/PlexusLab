@@ -3,45 +3,56 @@ from __future__ import annotations
 
 from cortex.brain.session import BrainSession
 
-
-def test_session_id_is_deterministic_per_chat(tmp_path):
-    session = BrainSession(tmp_path)
-    first = session.session_id(-1003881673794)
-    second = session.session_id(-1003881673794)
-    assert first == second
-    assert session.session_id(12345) != first
+CHAT = -1003881673794
 
 
 def test_first_call_uses_session_id_flag(tmp_path):
     session = BrainSession(tmp_path)
-    flag = session.session_flag(-1003881673794)
+    flag = session.session_flag(CHAT)
     assert flag.startswith("--session-id ")
-    assert session.session_id(-1003881673794) in flag
 
 
-def test_second_call_resumes(tmp_path):
+def test_fresh_candidates_are_random_not_deterministic(tmp_path):
+    """Живой инцидент: старый uuid5(chat_id) был детерминированным, так что
+    если claude хоть раз отклонял --session-id с этим id (например, "already
+    in use" из-за смены cwd), КАЖДАЯ следующая попытка для чата возвращала
+    ровно тот же самый id и билась в ту же ошибку навсегда. Кандидаты для
+    --session-id теперь обязаны быть разными между вызовами без mark_used."""
     session = BrainSession(tmp_path)
-    chat_id = -1003881673794
-    session.session_flag(chat_id)
-    session.mark_used(chat_id)
-
-    flag = session.session_flag(chat_id)
-    assert flag.startswith("--resume ")
+    first = session.session_flag(CHAT)
+    second = session.session_flag(CHAT)
+    assert first != second
 
 
-def test_reset_goes_back_to_session_id(tmp_path):
+def test_second_call_resumes_the_id_that_was_actually_used(tmp_path):
     session = BrainSession(tmp_path)
-    chat_id = -1003881673794
-    session.mark_used(chat_id)
+    chat_id = CHAT
+    first_flag = session.session_flag(chat_id)
+    session.mark_used(chat_id, first_flag)
+
+    resumed = session.session_flag(chat_id)
+    assert resumed == f"--resume {first_flag.split(maxsplit=1)[1]}"
+
+
+def test_reset_forgets_the_session_and_the_next_id_is_different(tmp_path):
+    session = BrainSession(tmp_path)
+    chat_id = CHAT
+    first_flag = session.session_flag(chat_id)
+    session.mark_used(chat_id, first_flag)
     assert session.session_flag(chat_id).startswith("--resume ")
 
     session.reset(chat_id)
-    assert session.session_flag(chat_id).startswith("--session-id ")
+    after_reset = session.session_flag(chat_id)
+    assert after_reset.startswith("--session-id ")
+    assert after_reset != first_flag  # не тот же "занятый" id, что раньше
 
 
 def test_marker_survives_a_new_instance(tmp_path):
     chat_id = 42
-    BrainSession(tmp_path).mark_used(chat_id)
+    session = BrainSession(tmp_path)
+    used = session.session_flag(chat_id)
+    session.mark_used(chat_id, used)
 
     fresh = BrainSession(tmp_path)
-    assert fresh.session_flag(chat_id).startswith("--resume ")
+    resumed = fresh.session_flag(chat_id)
+    assert resumed == f"--resume {used.split(maxsplit=1)[1]}"

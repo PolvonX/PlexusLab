@@ -1,11 +1,17 @@
 # cortex/brain/session.py
 """Сессия claude на чат: экономия токенов через --resume.
 
-id детерминированный (uuid5 от chat_id) — хранить нечего, кроме одного
-факта: обращались ли к этому чату раньше. Он живёт в файле-метке рядом с
-остальным состоянием Cortex, а не в памяти процесса — иначе рестарт сервера
-заставил бы claude --resume биться о несуществующую (для процесса) сессию,
-хотя на диске у claude она есть.
+Живой инцидент: id раньше был детерминированным (uuid5 от chat_id). Если
+claude хоть раз отклонял --session-id с этим id (например, ID уже
+зарегистрирован под другим cwd/project — см. живой разбор в
+docs/superpowers/reviews/), ВСЕ следующие попытки для этого чата бились в
+тот же самый id снова и снова: "Session ID ... is already in use" — чат
+навсегда застревал, потому что "новый" id был на самом деле тем же самым.
+
+Поэтому id теперь случайный (uuid4) и генерируется заново при каждом
+--session-id (первый контакт или восстановление после reset()). Единственное,
+что живёт на диске, — это ID, которым РЕАЛЬНО завершился успешный вызов
+(mark_used пишет его после успеха), а не факт "уже видели этот чат".
 """
 
 from __future__ import annotations
@@ -13,35 +19,36 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 
-#: Фиксированный namespace — иначе один и тот же chat_id давал бы разные
-#: uuid между запусками процесса (uuid5 без namespace не детерминирован).
-_NAMESPACE = uuid.UUID("6f2b6b3e-6d0a-4b1a-9f0a-2f1e8c9d7a10")
-
 
 class BrainSession:
-    """chat_id -> детерминированный session id claude + флаг «уже начата»."""
+    """chat_id -> id последней успешно начатой сессии claude (или ничего)."""
 
     def __init__(self, data_dir: Path) -> None:
         self._dir = data_dir / "brain_sessions"
         self._dir.mkdir(parents=True, exist_ok=True)
 
-    # ------------------------------------------------------------------
-    def session_id(self, chat_id: int) -> str:
-        return str(uuid.uuid5(_NAMESPACE, str(chat_id)))
-
-    def _marker(self, chat_id: int) -> Path:
-        return self._dir / f"{chat_id}.seen"
+    def _file(self, chat_id: int) -> Path:
+        return self._dir / f"{chat_id}.session"
 
     # ------------------------------------------------------------------
     def session_flag(self, chat_id: int) -> str:
-        sid = self.session_id(chat_id)
-        flag = "--resume" if self._marker(chat_id).exists() else "--session-id"
-        return f"{flag} {sid}"
+        stored = self._file(chat_id)
+        if stored.exists():
+            return f"--resume {stored.read_text(encoding='utf-8').strip()}"
+        # Новый случайный кандидат при каждом вызове без сохранённого id —
+        # так повтор после reset() гарантированно не наткнётся на тот же
+        # "занятый" id, что и до сброса.
+        return f"--session-id {uuid.uuid4()}"
 
-    def mark_used(self, chat_id: int) -> None:
-        self._marker(chat_id).touch()
+    def mark_used(self, chat_id: int, session_flag: str) -> None:
+        """Вызывается ПОСЛЕ успешного runner.run() с тем же session_flag,
+        что ушёл в claude, — сохраняем id, которым сессия реально
+        подтверждена, а не тот, что мы лишь собирались попробовать."""
+        session_id = session_flag.split(maxsplit=1)[1]
+        self._file(chat_id).write_text(session_id, encoding="utf-8")
 
     def reset(self, chat_id: int) -> None:
         """Резюме сломалось (сессия потеряна на стороне claude) — начинаем
-        с чистого листа и полной пересборки контекста из data/history/."""
-        self._marker(chat_id).unlink(missing_ok=True)
+        с чистого листа: следующий session_flag() выдаст новый случайный id,
+        а не повторит тот же самый."""
+        self._file(chat_id).unlink(missing_ok=True)

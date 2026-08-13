@@ -290,7 +290,7 @@ async def test_resume_failure_falls_back_to_a_fresh_session_once(
 
     # Помечаем чат как "уже видели" — session_flag() сразу вернёт --resume,
     # как оно и происходит на втором сообщении в реальном разговоре.
-    agent.session.mark_used(CHAT)
+    agent.session.mark_used(CHAT, "--session-id 11111111-1111-1111-1111-111111111111")
 
     await agent.handle_message(chat_id=CHAT, message_id=1, text="как ты там?", requester_id=1001)
 
@@ -319,7 +319,7 @@ async def test_resume_failure_does_not_retry_forever(tmp_path, secrets, registry
     runner = _AlwaysFailsRunner()
     deps.runner = runner
     agent = _agent(deps)
-    agent.session.mark_used(CHAT)
+    agent.session.mark_used(CHAT, "--session-id 11111111-1111-1111-1111-111111111111")
 
     await agent.handle_message(chat_id=CHAT, message_id=1, text="как ты там?", requester_id=1001)
 
@@ -361,7 +361,7 @@ async def test_resume_failure_past_first_iteration_is_reported_not_silently_retr
     runner = _ResumeFailsOnSecondIterationRunner()
     deps.runner = runner
     agent = _agent(deps)
-    agent.session.mark_used(CHAT)  # чат уже "видели" — сразу --resume с первого хода
+    agent.session.mark_used(CHAT, "--session-id 11111111-1111-1111-1111-111111111111")  # чат уже "видели" — сразу --resume с первого хода
 
     await agent.handle_message(chat_id=CHAT, message_id=1, text="кто в штате?", requester_id=1001)
 

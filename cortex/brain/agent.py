@@ -205,7 +205,7 @@ class BrainAgent:
             )
             return
 
-        self.session.mark_used(chat_id)
+        self.session.mark_used(chat_id, session_flag)
 
         actions, parse_errors = extract_actions(result.stdout)
         reply_text = strip_actions(result.stdout)
