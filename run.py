@@ -8,16 +8,14 @@
 
 from __future__ import annotations
 
-import sys
-
 from cortex.app import main
 
 if __name__ == "__main__":
-    if sys.platform == "win32":
-        import asyncio
-
-        # На Windows aiohttp плохо дружит с ProactorEventLoop при завершении
-        # процессов — Selector надёжнее для нашей нагрузки.
-        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-
+    # ВАЖНО: не переключать event loop на WindowsSelectorEventLoopPolicy.
+    # SelectorEventLoop на Windows не умеет запускать subprocess вообще —
+    # asyncio.create_subprocess_exec() падает с NotImplementedError, а это
+    # ровно то, чем runtime/runner.py вызывает и agy, и claude. Дефолтный
+    # ProactorEventLoop иногда шумит предупреждением от aiohttp при закрытии
+    # сессии на остановке сервера — это косметика, не сравнить с полностью
+    # неработающими сабагентами.
     raise SystemExit(main())
