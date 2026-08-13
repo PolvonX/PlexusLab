@@ -150,20 +150,12 @@ class Config:
     def ack_task_start(self) -> bool:
         return bool(self.section("telegram").get("ack_task_start", True))
 
-    # --- runner ---
-    @property
-    def runner_driver(self) -> RunnerDriver:
-        runner = self.section("agent_runner")
-        # PLEXUS_FORCE_DRIVER=mock — отладочный запуск без установленного agy,
-        # не трогая config.yaml.
-        name = os.getenv("PLEXUS_FORCE_DRIVER") or runner.get("driver", "agy")
-        drivers = runner.get("drivers", {}) or {}
+    # --- runner: делится по назначению, не по одному глобальному переключателю ---
+    def _load_driver(self, name: str) -> RunnerDriver:
+        drivers = self.section("agent_runner").get("drivers", {}) or {}
         spec = drivers.get(name)
         if not spec:
-            raise ConfigError(
-                f"agent_runner.driver = '{name}', но agent_runner.drivers.{name} "
-                "не описан в config.yaml"
-            )
+            raise ConfigError(f"Драйвер '{name}' не описан в agent_runner.drivers")
         if not spec.get("command"):
             raise ConfigError(f"У драйвера '{name}' не задан command")
         return RunnerDriver(
@@ -172,6 +164,19 @@ class Config:
             prompt_via_stdin=bool(spec.get("prompt_via_stdin", False)),
             env={str(k): str(v) for k, v in (spec.get("env") or {}).items()},
         )
+
+    @property
+    def runner_driver(self) -> RunnerDriver:
+        """Драйвер сотрудников (agy). PLEXUS_FORCE_DRIVER=mock — для отладки."""
+        name = os.getenv("PLEXUS_FORCE_DRIVER") or self.section("agent_runner").get("driver", "agy")
+        return self._load_driver(name)
+
+    @property
+    def brain_driver(self) -> RunnerDriver:
+        """Драйвер мозга (claude), независим от драйвера сотрудников.
+        PLEXUS_BRAIN_DRIVER=mock_claude — для отладки без живого claude."""
+        name = os.getenv("PLEXUS_BRAIN_DRIVER") or "claude"
+        return self._load_driver(name)
 
     @property
     def runner_timeout(self) -> int:
@@ -258,3 +263,24 @@ class Config:
     @property
     def synapse_name(self) -> str:
         return self.synapse.get("employee_name", "Synapse")
+
+    # --- brain (Cortex-на-Claude) ---
+    @property
+    def brain(self) -> dict[str, Any]:
+        return self.section("brain")
+
+    @property
+    def brain_autonomy(self) -> str:
+        return str(self.brain.get("autonomy", "balanced"))
+
+    @property
+    def brain_max_iterations(self) -> int:
+        return int(self.brain.get("max_iterations", 5))
+
+    @property
+    def brain_model(self) -> str:
+        return str(self.brain.get("model", "sonnet"))
+
+    @property
+    def brain_risk_overrides(self) -> dict[str, str]:
+        return {str(k): str(v) for k, v in (self.brain.get("risk_overrides") or {}).items()}

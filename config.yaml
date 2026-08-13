@@ -70,6 +70,22 @@ agent_runner:
       prompt_via_stdin: false
       env: {}
 
+    claude:
+      # {session_flag} = "--session-id <uuid>" на первом обращении из чата,
+      # "--resume <uuid>" на последующих — подставляет cortex/brain/session.py.
+      # {system_prompt} идёт через ту же безопасную подстановку argv, что и {prompt}.
+      command: >
+        claude -p "{prompt}" --output-format text
+        --system-prompt "{system_prompt}" --tools ""
+        --model sonnet {session_flag}
+      prompt_via_stdin: false
+      env: {}
+
+    mock_claude:
+      command: 'python "{root}/scripts/mock_claude.py" --prompt-file "{prompt_file}"'
+      prompt_via_stdin: false
+      env: {}
+
   timeout_seconds: 900
   # Защита от переполнения памяти на болтливом агенте.
   max_output_chars: 400000
@@ -147,3 +163,11 @@ synapse:
   user_agent: "PlexusLab-Synapse/1.0 (+https://plexus.lab)"
   # Куда падает дайджест: "ceo_dm" или "group".
   digest_target: "ceo_dm"
+
+# --- Мозг Cortex (Claude поверх claude CLI) --------------------
+brain:
+  # cautious | balanced | autonomous — см. docs/superpowers/specs/2026-08-13-cortex-brain-design.md
+  autonomy: "balanced"
+  max_iterations: 5
+  model: "sonnet"
+  risk_overrides: {}
