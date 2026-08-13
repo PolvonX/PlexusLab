@@ -203,3 +203,36 @@ async def test_unexpected_exception_is_reported_not_swallowed(
 
     assert len(gateway.messages) == 1
     assert "мозг Cortex споткнулся" in gateway.messages[0]
+
+
+class _RecordingRunner:
+    """Записывает kwargs каждого вызова .run() — не запускает ничего реально."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    async def run(self, **kwargs):
+        self.calls.append(kwargs)
+        raise NotImplementedError("не нужен реальный вызов для этого теста")
+
+
+async def test_brain_never_runs_claude_with_project_root_as_cwd(
+    tmp_path, secrets, registry, workspaces, state, frontend
+):
+    """Защита в глубину: даже если --tools "" когда-нибудь перестанет
+    работать как задумано, claude не должен физически видеть .env,
+    employees_registry.json и исходники Cortex через cwd."""
+    await registry.add(frontend)
+    cfg = _config_with_brain_driver(tmp_path, secrets, tmp_path / "counter.txt")
+    gateway = _FakeGateway()
+    deps = _make_deps(cfg, registry, workspaces, state, gateway)
+    recorder = _RecordingRunner()
+    deps.runner = recorder
+    agent = _agent(deps)
+
+    await agent.handle_message(chat_id=CHAT, message_id=1, text="привет", requester_id=1001)
+
+    assert len(recorder.calls) == 1
+    workspace = recorder.calls[0]["workspace"]
+    assert workspace != cfg.root
+    assert workspace.name == "brain_workspace"

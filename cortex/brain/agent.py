@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections import defaultdict
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..errors import AgentRunError, CortexError
@@ -54,6 +55,20 @@ class BrainAgent:
         self.session = session
         self.pending = pending
         self._locks: dict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
+
+    # ------------------------------------------------------------------
+    def _brain_workspace(self) -> Path:
+        """Изолированная, пустая cwd для вызовов claude — НЕ корень проекта.
+
+        --tools "" должен и без того запрещать claude трогать файлы, но cwd
+        всё равно не должен указывать на дерево с .env и токенами: это
+        defense-in-depth на случай, если ограничение инструментов когда-то
+        не сработает (найдено вживую — CEO получил внутренние детали проекта,
+        которых ни один мета-инструмент не отдаёт, см. коммит с этим фиксом).
+        """
+        path = self.deps.config.data_dir / "brain_workspace"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
 
     # ------------------------------------------------------------------
     async def handle_message(
@@ -109,7 +124,7 @@ class BrainAgent:
             async with self._locks[chat_id]:
                 result = await deps.runner.run(
                     prompt=prompt,
-                    workspace=deps.config.root,
+                    workspace=self._brain_workspace(),
                     agent="Cortex",
                     project=_BRAIN_PROJECT,
                     timeout=deps.config.runner_timeout,
