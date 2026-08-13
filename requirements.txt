@@ -1,0 +1,5 @@
+# Plexus Lab :: Cortex orchestrator
+aiogram>=3.13,<4.0
+PyYAML>=6.0
+python-dotenv>=1.0
+httpx>=0.27

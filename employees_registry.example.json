@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "employees": [
+    {
+      "name": "Synapse",
+      "display_name": "Synapse",
+      "role": "COO / Директор по инновациям",
+      "token": "PASTE_TOKEN_FROM_BOTFATHER",
+      "prompt_path": "prompts/synapse.md",
+      "username": null,
+      "bot_id": null,
+      "default_project": null,
+      "tools": [],
+      "listen": false,
+      "active": true,
+      "hired_at": "2026-08-12T00:00:00+00:00",
+      "notes": "Особая роль: web research, не пишет код. Дайджесты инноваций в личку CEO."
+    },
+    {
+      "name": "Frontend_Dev",
+      "display_name": "Frontend Dev",
+      "role": "Senior Frontend Engineer",
+      "token": "PASTE_TOKEN_FROM_BOTFATHER",
+      "prompt_path": "prompts/frontend_dev.md",
+      "username": null,
+      "bot_id": null,
+      "default_project": "basehub_web",
+      "tools": [],
+      "listen": false,
+      "active": true,
+      "hired_at": "2026-08-12T00:00:00+00:00",
+      "notes": ""
+    }
+  ]
+}

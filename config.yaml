@@ -1,0 +1,149 @@
+# ============================================================
+#  Plexus Lab :: Cortex — конфигурация оркестратора
+#  Секреты живут в .env, здесь только поведение системы.
+# ============================================================
+
+company:
+  name: "Plexus Lab"
+  tagline: "Многопрофильный R&D-центр"
+  orchestrator_name: "Cortex"
+  ceo_name: "Abdulloh Abbosov"
+
+paths:
+  registry: "employees_registry.json"
+  prompts_dir: "prompts"
+  projects_dir: "projects"
+  data_dir: "data"
+
+telegram:
+  # polling — работает без публичного домена (выбранный режим).
+  transport: "polling"
+  polling_timeout: 30
+  # Telegram режет сообщения на 4096; оставляем запас под разметку.
+  max_message_length: 3800
+  # Как часто обновлять «печатает…», пока agy думает (сек).
+  typing_interval: 4.0
+  # Слать ли в чат уведомление «задача принята».
+  ack_task_start: true
+
+# --- Запуск сабагентов (Google Antigravity CLI) --------------
+agent_runner:
+  # Активный драйвер. Переключи на "mock" для отладки без agy
+  # (или разово: PLEXUS_FORCE_DRIVER=mock / .\deploy.ps1 -Mock).
+  driver: "agy"
+
+  drivers:
+    agy:
+      # Реальный контракт Antigravity CLI (сверено по `agy --help`):
+      #   -p / --print      одиночный промпт неинтерактивно, ответ в stdout
+      #   --output-format   text | json | stream-json
+      #   --add-dir         папка в рабочую область агента (повторяемо)
+      #   --print-timeout   собственный таймаут agy (держим меньше нашего)
+      #
+      # ⚠ ПЕРЕД ПЕРВЫМ ЗАПУСКОМ нужен вход в Google один раз:
+      #     agy -p "ok"
+      #   и пройти по ссылке OAuth. Без этого agy отвечает
+      #   "Authentication required" и Cortex покажет это отчётом в чат.
+      #
+      # Если агенты не смогут читать файлы проекта (agy упрётся в запрос
+      # разрешений, а в print-режиме спросить не у кого) — добавь в конец
+      # команды один из флагов:
+      #   --sandbox                       мягко: терминал ограничен
+      #   --dangerously-skip-permissions  жёстко: авто-approve всех операций
+      # Второй включай осознанно: песочницу путей Cortex он не отменяет,
+      # но внутри проекта агент получит полную свободу.
+      command: 'agy -p "{prompt}" --output-format text --add-dir "{workspace}" --print-timeout 14m'
+      prompt_via_stdin: false
+      env: {}
+
+      # Плейсхолдеры для command:
+      #   {prompt}       текст промпта — подставляется отдельным argv,
+      #                  кавычки и переводы строк внутри безопасны
+      #   {prompt_file}  путь к временному .md с тем же текстом
+      #   {workspace}    абсолютный путь к папке проекта
+      #   {agent}        тег сотрудника, {project} имя проекта, {model} $AGY_MODEL
+
+    mock:
+      # {root} обязателен: процесс запускается с cwd = папка проекта,
+      # относительный путь к скрипту Cortex оттуда не разрешится.
+      command: 'python "{root}/scripts/mock_agy.py" --prompt-file "{prompt_file}"'
+      prompt_via_stdin: false
+      env: {}
+
+  timeout_seconds: 900
+  # Защита от переполнения памяти на болтливом агенте.
+  max_output_chars: 400000
+  # Сколько символов stderr показывать в отчёте об ошибке.
+  stderr_report_chars: 1500
+
+# --- Сборка контекста для агента -----------------------------
+context:
+  # Сколько последних сообщений чата уходит агенту.
+  history_messages: 30
+  # Жёсткий бюджет символов на блок истории.
+  history_chars_budget: 8000
+  # Включать ли в промпт дерево файлов проекта.
+  include_workspace_tree: true
+  workspace_tree_max_entries: 200
+
+# --- Параллелизм ---------------------------------------------
+concurrency:
+  # Сколько задач agy может крутиться одновременно во всей компании.
+  max_parallel_tasks: 3
+  # Задачи внутри ОДНОГО проекта выполняются строго по очереди,
+  # чтобы два агента не правили одни файлы одновременно.
+  serialize_per_project: true
+
+# --- Безопасность --------------------------------------------
+security:
+  # Пустой список = разрешены только CORP_GROUP_ID и личка CEO.
+  extra_allowed_chat_ids: []
+  # Реагировать на сообщения от других ботов из реестра.
+  allow_bot_senders: true
+  # Регексы запрещённых команд для execute_command.
+  command_blocklist:
+    - '(?i)\brm\s+(-[a-z]*\s+)*-?[a-z]*f[a-z]*\s+/(\s|$)'
+    - '(?i)\bformat\s+[a-z]:'
+    - '(?i)\bmkfs\b'
+    - '(?i)\bdd\s+if=.*of=/dev/'
+    - '(?i):\(\)\s*\{.*\};\s*:'
+    - '(?i)\bshutdown\b|\breboot\b|\bRestart-Computer\b'
+    - '(?i)Remove-Item\s+.*-Recurse.*\s+[A-Z]:\\(\s|$)'
+    - '(?i)\bgit\s+push\s+.*--force'
+  # Максимальный таймаут, который агент может запросить сам (сек).
+  max_command_timeout: 600
+  # Разрешать ли execute_command выходить за пределы папки проекта.
+  allow_escape_workspace: false
+
+# --- Политика инструментов -----------------------------------
+tools:
+  default:
+    - execute_command
+    - send_file
+    - update_telegram_profile
+    - update_system_prompt
+  # Переопределение по имени сотрудника (важнее default).
+  per_employee:
+    Synapse:
+      - web_research
+      - send_file
+      - update_telegram_profile
+      - update_system_prompt
+    Cortex:
+      - execute_command
+      - send_file
+      - update_telegram_profile
+      - update_system_prompt
+      - web_research
+
+# --- Synapse (COO / Директор по инновациям) ------------------
+synapse:
+  employee_name: "Synapse"
+  # Источники для дайджеста инноваций.
+  hackernews_top_limit: 12
+  hackernews_min_score: 80
+  fetch_timeout: 20
+  max_page_chars: 12000
+  user_agent: "PlexusLab-Synapse/1.0 (+https://plexus.lab)"
+  # Куда падает дайджест: "ceo_dm" или "group".
+  digest_target: "ceo_dm"

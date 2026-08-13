@@ -1,0 +1,21 @@
+.env
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# Рабочие среды агентов — это отдельные репозитории, не часть Cortex
+/projects/*
+!/projects/.gitkeep
+
+# Runtime-состояние: история чатов, аудит, бэкапы промптов
+/data/*
+!/data/.gitkeep
+
+# Реестр содержит боевые токены ботов
+employees_registry.json
+employees_registry.json.bak
+
+*.log
+.pytest_cache/
