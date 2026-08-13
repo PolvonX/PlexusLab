@@ -71,11 +71,15 @@ agent_runner:
       env: {}
 
     claude:
+      # claude.cmd, а не claude: npm на Windows ставит CLI как .cmd/.ps1 +
+      # бесрасширенный shell-скрипт для Git Bash. asyncio.create_subprocess_exec
+      # использует CreateProcess напрямую и умеет доподставлять только .exe —
+      # бесрасширенный "claude" находит только Git Bash, но не сам процесс Cortex.
       # {session_flag} = "--session-id <uuid>" на первом обращении из чата,
       # "--resume <uuid>" на последующих — подставляет cortex/brain/session.py.
       # {system_prompt} идёт через ту же безопасную подстановку argv, что и {prompt}.
       command: >
-        claude -p "{prompt}" --output-format text
+        claude.cmd -p "{prompt}" --output-format text
         --system-prompt "{system_prompt}" --tools ""
         --model sonnet {session_flag}
       prompt_via_stdin: false
