@@ -107,6 +107,23 @@ class BrainAgent:
         )
 
     # ------------------------------------------------------------------
+    async def _keep_typing(self, chat_id: int) -> None:
+        """Пока claude думает, в чате видно «печатает…» — тот же приём, что
+        Orchestrator._keep_typing использует для сотрудников."""
+        interval = self.deps.config.typing_interval
+        try:
+            while True:
+                try:
+                    await self.deps.gateway.gateway_bot.send_chat_action(
+                        chat_id=chat_id, action="typing"
+                    )
+                except Exception:  # noqa: BLE001 — индикатор набора не критичен
+                    pass
+                await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            pass
+
+    # ------------------------------------------------------------------
     async def _run_loop(
         self, *, chat_id: int, message_id: int | None, requester_id: int, prompt: str, iteration: int
     ) -> None:
@@ -120,6 +137,7 @@ class BrainAgent:
             return
 
         session_flag = self.session.session_flag(chat_id)
+        typing = asyncio.create_task(self._keep_typing(chat_id))
         try:
             async with self._locks[chat_id]:
                 result = await deps.runner.run(
@@ -142,6 +160,8 @@ class BrainAgent:
                 reply_to=message_id,
             )
             return
+        finally:
+            typing.cancel()
 
         self.session.mark_used(chat_id)
 
