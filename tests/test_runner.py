@@ -177,6 +177,32 @@ async def test_session_flag_is_appended_as_plain_tokens(tmp_path, secrets):
     assert "--resume 11111111-1111-1111-1111-111111111111" in result.stdout
 
 
+async def test_cp866_stderr_is_decoded_readably_not_as_mojibake(tmp_path, secrets):
+    """Живой инцидент: claude.cmd/Windows иногда пишет диагностику в OEM
+    cp866, а не UTF-8. Наивный decode("utf-8", errors="replace") на таких
+    байтах не падает — он молча превращает их в нечитаемые кракозябры
+    (валидные, но бессмысленные не-ASCII символы), потому что cp866-байты
+    случайно складываются в валидные многобайтовые UTF-8 последовательности.
+    Раннер должен распознать это и перекодировать как cp866."""
+    script = tmp_path / "cp866_stderr.py"
+    script.write_text(
+        "import sys\n"
+        "sys.stderr.buffer.write('Файл не найден'.encode('cp866'))\n"
+        "sys.exit(1)\n",
+        encoding="utf-8",
+    )
+    cfg = _config_with(tmp_path, secrets, f'"{sys.executable}" "{script}"')
+    workspace = tmp_path / "projects" / "sports_api"
+    workspace.mkdir(parents=True)
+
+    with pytest.raises(AgentRunError) as exc_info:
+        await AgentRunner(cfg).run(
+            prompt="x", workspace=workspace, agent="QA", project="sports_api"
+        )
+
+    assert "Файл не найден" in exc_info.value.stderr
+
+
 async def test_explicit_driver_overrides_the_configured_default(tmp_path, secrets):
     """The brain passes its own driver (Config.brain_driver) — the default
     agent_runner.driver must not be consulted when one is given explicitly."""

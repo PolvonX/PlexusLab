@@ -21,8 +21,34 @@ from ..models import AgentResult
 
 log = get_logger("runner")
 
-#: Windows-консоль иногда отдаёт cp1251 — не даём этому уронить задачу.
-_DECODE_KW = {"encoding": "utf-8", "errors": "replace"}
+def _looks_garbled(text: str) -> bool:
+    """Эвристика "кракозябр": были настоящие ошибки декодирования (replace
+    вставил U+FFFD), либо среди букв меньше половины ASCII/кириллицы —
+    похоже, что мы декодировали не тот байтовый поток как UTF-8."""
+    if "�" in text:
+        return True
+    letters = [c for c in text if c.isalpha()]
+    if len(letters) < 4:
+        return False
+    readable = sum(1 for c in letters if ord(c) < 128 or 0x0400 <= ord(c) <= 0x04FF)
+    return readable / len(letters) < 0.5
+
+
+def _decode_console_bytes(data: bytes) -> str:
+    """Windows иногда пишет диагностику (свою или узла claude.cmd) в OEM
+    cp866, а не UTF-8. decode("utf-8", errors="replace") на таких байтах не
+    падает — валидные cp866-байты случайно складываются в валидные
+    многобайтовые UTF-8 последовательности, и получается нечитаемая, но
+    "успешно декодированная" кракозябра (см. живой инцидент: --resume упал
+    с текстом вида "���誮� ������� ...", хотя на диске у claude всё в
+    порядке). Проверяем результат и при подозрении перекодируем как cp866."""
+    utf8 = data.decode("utf-8", errors="replace")
+    if not _looks_garbled(utf8):
+        return utf8
+    try:
+        return data.decode("cp866")
+    except UnicodeDecodeError:
+        return utf8
 
 #: Промпт подставляется в argv не через строку команды, а по метке: иначе
 #: кавычки и переводы строк внутри промпта разнесли бы shlex.
@@ -172,8 +198,8 @@ class AgentRunner:
                 ) from None
 
             duration = time.monotonic() - started
-            stdout = stdout_b.decode(**_DECODE_KW)
-            stderr = stderr_b.decode(**_DECODE_KW)
+            stdout = _decode_console_bytes(stdout_b)
+            stderr = _decode_console_bytes(stderr_b)
 
             truncated = False
             limit = self.config.runner_max_output
