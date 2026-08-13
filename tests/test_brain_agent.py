@@ -1,0 +1,178 @@
+# tests/test_brain_agent.py
+from __future__ import annotations
+
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import pytest
+
+from cortex.brain.agent import BrainAgent
+from cortex.brain.context import BrainPromptBuilder
+from cortex.brain.pending import PendingAction, PendingActionStore
+from cortex.brain.session import BrainSession
+from cortex.brain.tools.base import BrainToolRegistry
+from cortex.brain.tools.hr import FireEmployeeTool
+from cortex.brain.tools.read import GetEmployeeTool, GetStatusTool, ListProjectsTool, ListStaffTool
+from cortex.config import Config
+from cortex.context import ChatHistory
+from cortex.hr import HRService
+from cortex.runtime import AgentRunner
+from cortex.telegram.bot_pool import BotPool
+
+ECHO_BRAIN = Path(__file__).resolve().parent / "fixtures" / "echo_brain.py"
+CHAT = -100500
+
+
+class _FakeGateway:
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+        self.confirmations: list[tuple] = []
+
+    async def reply(self, chat_id: int, text: str, *, reply_to=None) -> None:
+        self.messages.append(text)
+
+    async def ask_confirmation(self, *, chat_id, action_id, summary, risk) -> None:
+        self.confirmations.append((chat_id, action_id, summary, risk))
+
+
+@dataclass
+class _FakeScheduler:
+    active: list = field(default_factory=list)
+
+
+@dataclass
+class _FakeDeps:
+    config: Config
+    registry: object
+    workspaces: object
+    state: object
+    history: object
+    runner: object
+    gateway: object
+    hr: object
+    scheduler: object = field(default_factory=_FakeScheduler)
+    tools: object = None
+
+    @property
+    def uptime_seconds(self) -> float:
+        return 0.0
+
+
+def _make_deps(cfg, registry, workspaces, state, gateway) -> _FakeDeps:
+    """hr нужен FireEmployeeTool — реальный HRService/BotPool безопасны здесь:
+    bots.drop() на токен, для которого никогда не открывался Bot, просто
+    ничего не делает (BotPool.drop проверяет наличие в своём кэше)."""
+    return _FakeDeps(
+        config=cfg, registry=registry, workspaces=workspaces, state=state,
+        history=ChatHistory(cfg.data_dir, limit=10), runner=AgentRunner(cfg), gateway=gateway,
+        hr=HRService(cfg, registry, BotPool(registry)),
+    )
+
+
+def _config_with_brain_driver(tmp_path, secrets, counter_file: Path) -> Config:
+    command = (
+        f'"{sys.executable}" "{ECHO_BRAIN}" --prompt-file {{prompt_file}} '
+        f'--counter-file "{counter_file}"'
+    )
+    raw = {
+        "company": {"name": "Plexus Lab", "ceo_name": "Abdulloh Abbosov"},
+        "paths": {"data_dir": "data", "prompts_dir": "prompts", "projects_dir": "projects"},
+        "agent_runner": {
+            "driver": "claude",
+            "drivers": {"claude": {"command": command}},
+            "timeout_seconds": 30,
+        },
+        "brain": {"autonomy": "balanced", "max_iterations": 5},
+    }
+    cfg = Config(root=tmp_path, raw=raw, secrets=secrets)
+    cfg.data_dir.mkdir(parents=True, exist_ok=True)
+    cfg.prompts_dir.mkdir(parents=True, exist_ok=True)
+    return cfg
+
+
+def _agent(deps, tools=None) -> BrainAgent:
+    registry = BrainToolRegistry()
+    registry.register_all(
+        tools or [ListStaffTool(), GetEmployeeTool(), ListProjectsTool(), GetStatusTool(), FireEmployeeTool()]
+    )
+    prompts = BrainPromptBuilder(deps.config, deps.registry, deps.workspaces, deps.state, registry)
+    session = BrainSession(deps.config.data_dir)
+    pending = PendingActionStore(deps.config.data_dir / "pending_actions.json")
+    return BrainAgent(deps=deps, tools=registry, prompts=prompts, session=session, pending=pending)
+
+
+async def test_two_turn_conversation_ends_with_plain_text(tmp_path, secrets, registry, workspaces, state, frontend):
+    await registry.add(frontend)
+    cfg = _config_with_brain_driver(tmp_path, secrets, tmp_path / "counter.txt")
+    gateway = _FakeGateway()
+    deps = _make_deps(cfg, registry, workspaces, state, gateway)
+
+    agent = _agent(deps)
+    await agent.handle_message(chat_id=CHAT, message_id=1, text="кто у нас в штате?", requester_id=1001)
+
+    assert any("Сейчас посмотрю" in m for m in gateway.messages)
+    assert any("Frontend_Dev" in m for m in gateway.messages)
+
+
+async def test_risky_action_asks_for_confirmation_first(tmp_path, secrets, registry, workspaces, state, frontend):
+    await registry.add(frontend)
+    counter = tmp_path / "counter_fire.txt"
+    command = f'"{sys.executable}" "{ECHO_BRAIN}" --prompt-file {{prompt_file}} --counter-file "{counter}"'
+    # Переиспользуем ту же заглушку, но подменим её первый ответ на fire_employee
+    # через отдельный скрипт — проще: пишем его прямо в тесте.
+    fire_script = tmp_path / "echo_fire.py"
+    fire_script.write_text(
+        "import sys\n"
+        "sys.stdout.write('<action>\\n{\"tool\": \"fire_employee\", \"args\": {\"name\": \"Frontend_Dev\"}}\\n</action>\\n')\n",
+        encoding="utf-8",
+    )
+    cfg = _config_with_brain_driver(tmp_path, secrets, counter)
+    cfg.raw["agent_runner"]["drivers"]["claude"]["command"] = f'"{sys.executable}" "{fire_script}"'
+    gateway = _FakeGateway()
+    deps = _make_deps(cfg, registry, workspaces, state, gateway)
+
+    agent = _agent(deps)
+    await agent.handle_message(chat_id=CHAT, message_id=1, text="уволь Frontend_Dev", requester_id=1001)
+
+    # действие НЕ выполнено — сотрудник всё ещё в штате, а CEO увидел кнопки
+    assert registry.get("Frontend_Dev") is not None
+    assert registry.get("Frontend_Dev").active is True
+    assert len(gateway.confirmations) == 1
+    assert gateway.confirmations[0][3] == "risky"
+
+
+async def test_confirmed_pending_action_executes_and_reports(tmp_path, secrets, registry, workspaces, state, frontend):
+    await registry.add(frontend)
+    cfg = _config_with_brain_driver(tmp_path, secrets, tmp_path / "counter.txt")
+    gateway = _FakeGateway()
+    deps = _make_deps(cfg, registry, workspaces, state, gateway)
+    agent = _agent(deps)
+
+    pending = PendingAction(
+        id="p1", chat_id=CHAT, message_id=1, requester_id=1001,
+        tool="fire_employee", args={"name": "Frontend_Dev"}, risk="risky", summary="Уволить",
+    )
+    await agent.pending.add(pending)
+
+    await agent.resolve_pending("p1", approved=True)
+
+    assert registry.get("Frontend_Dev") is None or registry.get("Frontend_Dev").active is False
+
+
+async def test_declined_pending_action_does_not_execute(tmp_path, secrets, registry, workspaces, state, frontend):
+    await registry.add(frontend)
+    cfg = _config_with_brain_driver(tmp_path, secrets, tmp_path / "counter.txt")
+    gateway = _FakeGateway()
+    deps = _make_deps(cfg, registry, workspaces, state, gateway)
+    agent = _agent(deps)
+
+    pending = PendingAction(
+        id="p2", chat_id=CHAT, message_id=1, requester_id=1001,
+        tool="fire_employee", args={"name": "Frontend_Dev"}, risk="risky", summary="Уволить",
+    )
+    await agent.pending.add(pending)
+
+    await agent.resolve_pending("p2", approved=False)
+
+    assert registry.get("Frontend_Dev").active is True
