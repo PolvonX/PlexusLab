@@ -211,7 +211,7 @@ class BrainAgent:
         reply_text = strip_actions(result.stdout)
 
         if reply_text:
-            await deps.gateway.reply(chat_id, fmt.esc(reply_text), reply_to=message_id)
+            await deps.gateway.reply(chat_id, fmt.markdown_to_html(reply_text), reply_to=message_id)
             deps.history.add(
                 ChatMessage(
                     chat_id=chat_id, message_id=message_id or 0, author="Cortex",

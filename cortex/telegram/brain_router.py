@@ -48,10 +48,14 @@ def build_brain_router(deps: "Deps") -> Router:
     router = Router(name="brain")
 
     # ------------------------------------------------------------------
-    @router.message(StateFilter(None), F.text)
+    @router.message(StateFilter(None), F.text | F.caption)
     async def on_text(message: Message) -> None:
-        text = message.text or ""
-        if text.startswith("/"):
+        # message.text — для обычного текста, caption — для фото/файлов с
+        # подписью (живой инцидент: CEO прислал скриншот-жалобу с подписью,
+        # F.text один её не пропускал вообще, бот молчал — выглядело как
+        # падение). Само фото не разбираем, только подпись.
+        text = message.text or message.caption or ""
+        if not text or text.startswith("/"):
             return  # слэш-команд больше нет — не отвечаем на призраков старого UX
 
         try:

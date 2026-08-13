@@ -147,6 +147,43 @@ async def test_non_ceo_free_text_is_ignored(config, registry, workspaces):
     assert brain.handled == []
 
 
+async def test_photo_with_caption_reaches_brain(config, registry, workspaces):
+    """Живой инцидент: CEO прислал скриншот с подписью-жалобой — бот не
+    ответил вообще ничего (выглядело как падение). Причина: F.text
+    проверяет message.text, а у медиа с подписью текст лежит в
+    message.caption, text всегда None — фильтр никогда не пропускал
+    обработчик, поэтому проверяем через настоящую цепочку фильтров
+    aiogram (handler.check), а не прямой вызов callback."""
+    from cortex.state import ChatState
+    from cortex.telegram.routing import MentionRouter
+
+    state = ChatState(config.data_dir)
+    mentions = MentionRouter(registry, workspaces, state)
+    brain = _FakeBrain()
+    deps = _FakeDeps(brain=brain, mentions=mentions, orchestrator=_FakeOrchestrator())
+
+    router = build_brain_router(deps)
+    handler = router.message.handlers[0]
+
+    message = SimpleNamespace(
+        text=None,
+        caption="вот так ты отвечаешь, почини",
+        chat=SimpleNamespace(id=CHAT),
+        message_id=7,
+        from_user=SimpleNamespace(id=CEO_ID, full_name="CEO", is_bot=False),
+        reply=_noop_reply,
+        answer=_noop_reply,
+    )
+
+    matched, _kwargs = await handler.check(message, state=SimpleNamespace(get_state=lambda: None))
+    assert matched, "фильтр должен пропускать сообщения с подписью, не только чистый текст"
+
+    await handler.callback(message)
+    await asyncio.sleep(0)
+
+    assert brain.handled == [(CHAT, 7, "вот так ты отвечаешь, почини", CEO_ID)]
+
+
 async def test_confirm_callback_resolves_pending(config, registry, workspaces):
     from cortex.state import ChatState
     from cortex.telegram.routing import MentionRouter

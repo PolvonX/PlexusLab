@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import html
+import re
 from typing import Iterable
 
 from ..errors import AgentRunError, CortexError
@@ -18,6 +19,25 @@ DEFAULT_LIMIT = 3800
 
 def esc(text: str) -> str:
     return html.escape(str(text), quote=False)
+
+
+_CODE_RE = re.compile(r"`([^`\n]+?)`")
+_BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
+_ITALIC_RE = re.compile(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)")
+
+
+def markdown_to_html(text: str) -> str:
+    """Мозг (claude) обучен на Markdown и пишет **жирным**/`код`, а
+    сообщения от его лица уходят с parse_mode=HTML (см. модульный докстринг)
+    — без конвертации звёздочки и бэктики долетают до CEO буквально (живой
+    инцидент). Не полный парсер — только то, что реально встречается в
+    ответах мозга. `.` в regex не матчит перевод строки, поэтому непарный
+    маркер не склеивает соседние абзацы в один тег."""
+    result = esc(text)
+    result = _CODE_RE.sub(lambda m: f"<code>{m.group(1)}</code>", result)
+    result = _BOLD_RE.sub(lambda m: f"<b>{m.group(1)}</b>", result)
+    result = _ITALIC_RE.sub(lambda m: f"<i>{m.group(1)}</i>", result)
+    return result
 
 
 def code_block(text: str, limit: int = 2500) -> str:
