@@ -14,7 +14,7 @@ import uuid
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
-from ..errors import AgentRunError
+from ..errors import AgentRunError, CortexError
 from ..logging_setup import get_logger
 from ..models import Action, ChatMessage, ToolResult
 from ..telegram import formatting as fmt
@@ -59,16 +59,36 @@ class BrainAgent:
     async def handle_message(
         self, *, chat_id: int, message_id: int | None, text: str, requester_id: int
     ) -> None:
+        """Точка входа из brain_router.py — запускается через
+        asyncio.create_task(), поэтому это последний рубеж: любое
+        исключение отсюда либо уходит в чат, либо тонет молча в
+        "Task exception was never retrieved" (как уже случалось с
+        NotImplementedError из-за WindowsSelectorEventLoopPolicy)."""
         deps = self.deps
-        history_block = deps.history.render(
-            chat_id, limit=deps.config.history_messages, budget=deps.config.history_chars_budget
-        )
-        prompt = self.prompts.build_initial(
-            chat_id=chat_id, history_block=history_block, message_text=text
-        )
-        await self._run_loop(
-            chat_id=chat_id, message_id=message_id, requester_id=requester_id,
-            prompt=prompt, iteration=1,
+        try:
+            history_block = deps.history.render(
+                chat_id, limit=deps.config.history_messages, budget=deps.config.history_chars_budget
+            )
+            prompt = self.prompts.build_initial(
+                chat_id=chat_id, history_block=history_block, message_text=text
+            )
+            await self._run_loop(
+                chat_id=chat_id, message_id=message_id, requester_id=requester_id,
+                prompt=prompt, iteration=1,
+            )
+        except Exception as exc:  # noqa: BLE001 — последний рубеж, см. docstring
+            await self._report_unexpected_failure(chat_id, message_id, exc)
+
+    # ------------------------------------------------------------------
+    async def _report_unexpected_failure(
+        self, chat_id: int, message_id: int | None, exc: Exception
+    ) -> None:
+        if isinstance(exc, CortexError):
+            log.error("Мозг: %s", exc)
+        else:
+            log.exception("Мозг упал неожиданно")
+        await self.deps.gateway.reply(
+            chat_id, fmt.error_report(exc, context="мозг Cortex споткнулся"), reply_to=message_id
         )
 
     # ------------------------------------------------------------------
@@ -182,23 +202,28 @@ class BrainAgent:
 
     # ------------------------------------------------------------------
     async def resolve_pending(self, action_id: str, *, approved: bool) -> None:
+        """Второй вход из asyncio.create_task() (brain_router.py, callback
+        подтверждения) — тот же последний рубеж, что и у handle_message."""
         pending = await self.pending.pop(action_id)
         if pending is None:
             return
 
-        if not approved:
-            result = ToolResult.failure("Действие отменено CEO")
-        else:
-            ctx = BrainToolContext(
-                deps=self.deps, chat_id=pending.chat_id, requester_id=pending.requester_id
-            )
-            action = Action(tool=pending.tool, args=pending.args)
-            result = await self.tools.dispatch(action, ctx)
+        try:
+            if not approved:
+                result = ToolResult.failure("Действие отменено CEO")
+            else:
+                ctx = BrainToolContext(
+                    deps=self.deps, chat_id=pending.chat_id, requester_id=pending.requester_id
+                )
+                action = Action(tool=pending.tool, args=pending.args)
+                result = await self.tools.dispatch(action, ctx)
 
-        await self._continue_after_result(
-            chat_id=pending.chat_id, message_id=pending.message_id,
-            requester_id=pending.requester_id, tool_name=pending.tool, result=result, iteration=1,
-        )
+            await self._continue_after_result(
+                chat_id=pending.chat_id, message_id=pending.message_id,
+                requester_id=pending.requester_id, tool_name=pending.tool, result=result, iteration=1,
+            )
+        except Exception as exc:  # noqa: BLE001 — последний рубеж, см. handle_message
+            await self._report_unexpected_failure(pending.chat_id, pending.message_id, exc)
 
     # ------------------------------------------------------------------
     async def _continue_after_result(

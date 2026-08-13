@@ -176,3 +176,30 @@ async def test_declined_pending_action_does_not_execute(tmp_path, secrets, regis
     await agent.resolve_pending("p2", approved=False)
 
     assert registry.get("Frontend_Dev").active is True
+
+
+class _ExplodingRunner:
+    """Симулирует то, что реально произошло на живом сервере: subprocess
+    падает с NotImplementedError (SelectorEventLoop не умеет их запускать
+    на Windows) — исключением, которое НЕ является AgentRunError."""
+
+    async def run(self, **kwargs):
+        raise NotImplementedError("subprocess не поддерживается этим event loop")
+
+
+async def test_unexpected_exception_is_reported_not_swallowed(
+    tmp_path, secrets, registry, workspaces, state, frontend
+):
+    """Регрессия: до фикса такое исключение тонуло в 'Task exception was
+    never retrieved' и CEO не получал вообще никакого ответа."""
+    await registry.add(frontend)
+    cfg = _config_with_brain_driver(tmp_path, secrets, tmp_path / "counter.txt")
+    gateway = _FakeGateway()
+    deps = _make_deps(cfg, registry, workspaces, state, gateway)
+    deps.runner = _ExplodingRunner()
+    agent = _agent(deps)
+
+    await agent.handle_message(chat_id=CHAT, message_id=1, text="привет", requester_id=1001)
+
+    assert len(gateway.messages) == 1
+    assert "мозг Cortex споткнулся" in gateway.messages[0]
