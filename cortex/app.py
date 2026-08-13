@@ -26,6 +26,7 @@ from .brain.tools.projects import (
     UnlinkProjectTool,
 )
 from .brain.tools.read import GetEmployeeTool, GetStatusTool, ListProjectsTool, ListStaffTool
+from .brain.tools.self_work import SelfExecuteTaskTool
 from .brain.tools.shell_tool import ExecuteCommandBrainTool
 from .brain.tools.work import AssignTaskTool, RequestDigestTool, SetListenTool
 from .brain.tools.work import SendFileTool as BrainSendFileTool
@@ -140,7 +141,7 @@ class PlexusLab:
                 CreateProjectTool(), LinkProjectTool(), SetChatProjectTool(),
                 UnlinkProjectTool(), ArchiveProjectTool(),
                 AssignTaskTool(), SetListenTool(), BrainSendFileTool(), RequestDigestTool(),
-                ExecuteCommandBrainTool(),
+                ExecuteCommandBrainTool(), SelfExecuteTaskTool(),
             ]
         )
         brain_prompts = BrainPromptBuilder(cfg, registry, workspaces, state, brain_tools)
