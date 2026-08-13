@@ -44,6 +44,8 @@ class Deps:
     synapse: SynapseService
     #: Проставляется после создания Gateway — он сам нуждается в Deps.
     gateway: Any = None
+    #: Мозг Cortex — собирается в app.py после Deps, тем же приёмом, что gateway.
+    brain: Any = None
     started_at: datetime = None  # type: ignore[assignment]
 
     def __post_init__(self) -> None:

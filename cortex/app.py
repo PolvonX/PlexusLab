@@ -12,6 +12,23 @@ import sys
 from pathlib import Path
 
 from .agents import SynapseService
+from .brain.agent import BrainAgent
+from .brain.context import BrainPromptBuilder
+from .brain.pending import PendingActionStore
+from .brain.session import BrainSession
+from .brain.tools.base import BrainToolRegistry
+from .brain.tools.hr import FireEmployeeTool, HireEmployeeTool, WriteJobDescriptionTool
+from .brain.tools.projects import (
+    ArchiveProjectTool,
+    CreateProjectTool,
+    LinkProjectTool,
+    SetChatProjectTool,
+    UnlinkProjectTool,
+)
+from .brain.tools.read import GetEmployeeTool, GetStatusTool, ListProjectsTool, ListStaffTool
+from .brain.tools.shell_tool import ExecuteCommandBrainTool
+from .brain.tools.work import AssignTaskTool, RequestDigestTool, SetListenTool
+from .brain.tools.work import SendFileTool as BrainSendFileTool
 from .config import Config
 from .context import ChatHistory
 from .deps import Deps
@@ -113,6 +130,26 @@ class PlexusLab:
             guard=guard,
             hr=hr,
             synapse=synapse,
+        )
+
+        brain_tools = BrainToolRegistry()
+        brain_tools.register_all(
+            [
+                ListStaffTool(), GetEmployeeTool(), ListProjectsTool(), GetStatusTool(),
+                HireEmployeeTool(), WriteJobDescriptionTool(), FireEmployeeTool(),
+                CreateProjectTool(), LinkProjectTool(), SetChatProjectTool(),
+                UnlinkProjectTool(), ArchiveProjectTool(),
+                AssignTaskTool(), SetListenTool(), BrainSendFileTool(), RequestDigestTool(),
+                ExecuteCommandBrainTool(),
+            ]
+        )
+        brain_prompts = BrainPromptBuilder(cfg, registry, workspaces, state, brain_tools)
+        self.deps.brain = BrainAgent(
+            deps=self.deps,
+            tools=brain_tools,
+            prompts=brain_prompts,
+            session=BrainSession(cfg.data_dir),
+            pending=PendingActionStore(cfg.data_dir / "pending_actions.json"),
         )
         return self.deps
 

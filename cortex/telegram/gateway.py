@@ -24,11 +24,9 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from ..logging_setup import get_logger
 from ..models import Employee
+from .brain_router import build_brain_router
 from .formatting import esc, split_message
-from .handlers import build_command_router, build_mention_router
-from .hiring import build_hiring_router
 from .middleware import ChatLoggerMiddleware, SecurityMiddleware
-from .synapse_handlers import build_synapse_router
 
 if TYPE_CHECKING:  # pragma: no cover
     from ..deps import Deps
@@ -48,17 +46,13 @@ class Gateway:
         self._stopping = False
 
     # ------------------------------------------------------------------
-    def _build_dispatcher(self, *, with_hiring: bool) -> Dispatcher:
+    def _build_dispatcher(self) -> Dispatcher:
         dispatcher = Dispatcher(storage=self._storage)
 
         dispatcher.message.middleware(SecurityMiddleware(self.deps.guard))
         dispatcher.message.middleware(ChatLoggerMiddleware(self.deps.history))
 
-        if with_hiring:
-            dispatcher.include_router(build_hiring_router(self.deps))
-        dispatcher.include_router(build_command_router(self.deps))
-        dispatcher.include_router(build_synapse_router(self.deps))
-        dispatcher.include_router(build_mention_router(self.deps))
+        dispatcher.include_router(build_brain_router(self.deps))
         return dispatcher
 
     # ------------------------------------------------------------------
@@ -71,15 +65,15 @@ class Gateway:
         me = await self._gateway_bot.get_me()
         log.info("Шлюз Cortex: @%s (id=%s)", me.username, me.id)
 
-        await self._spawn("__gateway__", self._gateway_bot, with_hiring=True)
+        await self._spawn("__gateway__", self._gateway_bot)
 
         for employee in self.deps.registry.all():
             if employee.listen:
                 await self.start_listener(employee)
 
     # ------------------------------------------------------------------
-    async def _spawn(self, key: str, bot: Bot, *, with_hiring: bool) -> None:
-        dispatcher = self._build_dispatcher(with_hiring=with_hiring)
+    async def _spawn(self, key: str, bot: Bot) -> None:
+        dispatcher = self._build_dispatcher()
         self._dispatchers[key] = dispatcher
 
         async def run() -> None:
@@ -107,7 +101,7 @@ class Gateway:
             return False
 
         bot = await self.deps.bots.get(employee)
-        await self._spawn(key, bot, with_hiring=False)
+        await self._spawn(key, bot)
         return True
 
     async def stop_listener(self, name: str) -> bool:
