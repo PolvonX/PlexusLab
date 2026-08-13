@@ -77,3 +77,48 @@ async def test_ask_confirmation_sends_buttons_with_action_id_in_callback_data():
     buttons = [b for row in markup.inline_keyboard for b in row]
     callback_data = {b.callback_data for b in buttons}
     assert callback_data == {"brain:confirm:abc123", "brain:cancel:abc123"}
+
+
+async def test_ask_choice_sends_one_button_per_option_in_order():
+    gateway = Gateway(_FakeDeps())
+    fake_bot = _FakeGatewayBot()
+    gateway._gateway_bot = fake_bot
+
+    await gateway.ask_choice(
+        chat_id=-100500, choice_id="c1", text="Вопрос 1?", options=["A) раз", "B) два", "C) три"],
+    )
+
+    assert len(fake_bot.sent_with_markup) == 1
+    chat_id, text, markup = fake_bot.sent_with_markup[0]
+    assert "Вопрос 1?" in text
+    buttons = [b for row in markup.inline_keyboard for b in row]
+    assert [b.text for b in buttons] == ["A) раз", "B) два", "C) три"]
+    assert [b.callback_data for b in buttons] == [
+        "brain:choice:c1:0", "brain:choice:c1:1", "brain:choice:c1:2",
+    ]
+
+
+async def test_ask_choice_converts_markdown_and_escapes_html():
+    gateway = Gateway(_FakeDeps())
+    fake_bot = _FakeGatewayBot()
+    gateway._gateway_bot = fake_bot
+
+    await gateway.ask_choice(
+        chat_id=-100500, choice_id="c1", text="**Важно**: a < b?", options=["Да", "Нет"],
+    )
+
+    _chat_id, text, _markup = fake_bot.sent_with_markup[0]
+    assert text == "<b>Важно</b>: a &lt; b?"
+
+
+async def test_ask_choice_truncates_long_button_labels():
+    gateway = Gateway(_FakeDeps())
+    fake_bot = _FakeGatewayBot()
+    gateway._gateway_bot = fake_bot
+
+    long_option = "x" * 200
+    await gateway.ask_choice(chat_id=-100500, choice_id="c1", text="q", options=[long_option])
+
+    _chat_id, _text, markup = fake_bot.sent_with_markup[0]
+    button = markup.inline_keyboard[0][0]
+    assert len(button.text) <= 80

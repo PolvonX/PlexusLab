@@ -18,6 +18,7 @@ from aiogram.types import CallbackQuery, Message
 
 from ..errors import CortexError
 from ..logging_setup import get_logger
+from ..models import ChatMessage
 from . import formatting as fmt
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -116,7 +117,7 @@ def build_brain_router(deps: "Deps") -> Router:
         background.add_done_callback(_on_background_done)
 
     # ------------------------------------------------------------------
-    @router.callback_query(F.data.startswith("brain:"))
+    @router.callback_query(F.data.startswith("brain:confirm:") | F.data.startswith("brain:cancel:"))
     async def on_confirmation(callback: CallbackQuery) -> None:
         if not callback.from_user or callback.from_user.id != deps.config.secrets.ceo_id:
             await callback.answer("Только CEO может это подтвердить.", show_alert=True)
@@ -137,6 +138,57 @@ def build_brain_router(deps: "Deps") -> Router:
                 approved=approved,
             ),
             name="brain-resolve",
+        )
+        _BACKGROUND.add(background)
+        background.add_done_callback(_on_background_done)
+
+    # ------------------------------------------------------------------
+    @router.callback_query(F.data.startswith("brain:choice:"))
+    async def on_choice(callback: CallbackQuery) -> None:
+        """Кнопка квиза/теста (brain/tools/interactive.py) — в отличие от
+        on_confirmation вариантов много и они не гейтят исполнение
+        инструмента, поэтому выбор просто возвращается в разговор как
+        обычное сообщение CEO (тем же путём, что on_text)."""
+        if not callback.from_user or callback.from_user.id != deps.config.secrets.ceo_id:
+            await callback.answer("Только CEO может отвечать.", show_alert=True)
+            return
+
+        _, _, choice_id, index_raw = (callback.data or "").split(":", maxsplit=3)
+        chat_id = callback.message.chat.id if callback.message else callback.from_user.id
+
+        pending = await deps.choices.pop(choice_id)
+        if pending is None:
+            await callback.answer("Этот вопрос уже отвечен или устарел.", show_alert=True)
+            if callback.message is not None:
+                await callback.message.edit_reply_markup(reply_markup=None)
+            return
+
+        try:
+            option = pending.options[int(index_raw)]
+        except (ValueError, IndexError):
+            await callback.answer("Не разобрал выбор.", show_alert=True)
+            return
+
+        if callback.message is not None:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        await callback.answer(option[:200])
+
+        deps.history.add(
+            ChatMessage(
+                chat_id=chat_id,
+                message_id=pending.message_id or 0,
+                author=deps.config.ceo_name,
+                text=option,
+                is_agent=False,
+            )
+        )
+
+        background = asyncio.create_task(
+            deps.brain.handle_message(
+                chat_id=chat_id, message_id=pending.message_id,
+                text=option, requester_id=pending.requester_id,
+            ),
+            name="brain-choice",
         )
         _BACKGROUND.add(background)
         background.add_done_callback(_on_background_done)

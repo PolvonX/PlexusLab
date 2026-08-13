@@ -42,6 +42,10 @@ class Deps:
     guard: SecurityGuard
     hr: HRService
     synapse: SynapseService
+    #: Отложенные квизы/выборы мозга (см. brain/choices.py) — доступен и
+    #: инструменту send_buttons, и роутеру callback'ов, поэтому живёт на
+    #: Deps, а не внутри BrainAgent.
+    choices: Any = None
     #: Проставляется после создания Gateway — он сам нуждается в Deps.
     gateway: Any = None
     #: Мозг Cortex — собирается в app.py после Deps, тем же приёмом, что gateway.

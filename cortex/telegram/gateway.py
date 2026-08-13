@@ -25,8 +25,12 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from ..logging_setup import get_logger
 from ..models import Employee
 from .brain_router import build_brain_router
-from .formatting import esc, split_message
+from .formatting import esc, markdown_to_html, split_message
 from .middleware import ChatLoggerMiddleware, SecurityMiddleware
+
+#: Практический предел для текста inline-кнопки Telegram — длиннее не
+#: обрезаем на глаз, а режем явно, чтобы не поймать невнятную ошибку API.
+_BUTTON_TEXT_LIMIT = 80
 
 if TYPE_CHECKING:  # pragma: no cover
     from ..deps import Deps
@@ -176,6 +180,25 @@ class Gateway:
             chat_id=chat_id,
             text=f"⚠️ Подтверди действие ({esc(risk)}): {esc(summary)}",
             reply_markup=keyboard,
+        )
+
+    async def ask_choice(self, *, chat_id: int, choice_id: str, text: str, options: list[str]) -> None:
+        """Кнопки произвольного выбора для мозга (квизы, тесты, голосования) —
+        в отличие от ask_confirmation вариантов может быть сколько угодно и
+        подписи у них произвольные, а не жёсткий ✅/❌. Индекс в callback_data,
+        не сам текст варианта: у Telegram лимит ~64 байта на callback_data,
+        текст варианта в нём может не поместиться."""
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(
+                    text=option[:_BUTTON_TEXT_LIMIT],
+                    callback_data=f"brain:choice:{choice_id}:{index}",
+                )]
+                for index, option in enumerate(options)
+            ]
+        )
+        await self.gateway_bot.send_message(
+            chat_id=chat_id, text=markdown_to_html(text), reply_markup=keyboard,
         )
 
     # ------------------------------------------------------------------

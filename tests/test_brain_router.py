@@ -57,6 +57,15 @@ class _FakeConfigSecrets:
 class _FakeConfig:
     secrets: object = field(default_factory=_FakeConfigSecrets)
     ack_task_start: bool = False
+    ceo_name: str = "Abdulloh Abbosov"
+
+
+class _FakeHistory:
+    def __init__(self) -> None:
+        self.added: list[tuple] = []
+
+    def add(self, message) -> None:
+        self.added.append((message.chat_id, message.author, message.text, message.is_agent))
 
 
 @dataclass
@@ -66,6 +75,8 @@ class _FakeDeps:
     orchestrator: object
     config: object = field(default_factory=_FakeConfig)
     scheduler: object = None
+    history: object = field(default_factory=_FakeHistory)
+    choices: object = None
 
 
 def _message(text: str, user_id: int = CEO_ID):
@@ -83,10 +94,10 @@ async def _noop_reply(*args, **kwargs):
     return None
 
 
-def _get_handler(router, message_or_callback_type: str):
-    """Достаём единственный обработчик нужного observer'а из router."""
+def _get_handler(router, message_or_callback_type: str, index: int = 0):
+    """Достаём обработчик нужного observer'а из router по позиции."""
     observer = getattr(router, message_or_callback_type)
-    return observer.handlers[0].callback
+    return observer.handlers[index].callback
 
 
 async def test_mention_bypasses_brain(config, registry, workspaces, frontend):
@@ -206,6 +217,77 @@ async def test_confirm_callback_resolves_pending(config, registry, workspaces):
     await asyncio.sleep(0)
 
     assert brain.resolved == [("abc123", CHAT, True)]
+
+
+def _choice_callback(data: str, *, edited: list, user_id: int = CEO_ID):
+    async def _edit_reply_markup(**kwargs):
+        edited.append(kwargs.get("reply_markup"))
+
+    async def _edit_text(*args, **kwargs):
+        edited.append(("text", args, kwargs))
+
+    return SimpleNamespace(
+        data=data,
+        from_user=SimpleNamespace(id=user_id),
+        message=SimpleNamespace(
+            chat=SimpleNamespace(id=CHAT),
+            edit_reply_markup=_edit_reply_markup,
+            edit_text=_edit_text,
+        ),
+        answer=_noop_reply,
+    )
+
+
+async def test_choice_click_feeds_selected_option_back_to_brain(config, registry, workspaces, choices):
+    from cortex.brain.choices import PendingChoice
+    from cortex.state import ChatState
+    from cortex.telegram.routing import MentionRouter
+
+    state = ChatState(config.data_dir)
+    mentions = MentionRouter(registry, workspaces, state)
+    brain = _FakeBrain()
+    deps = _FakeDeps(
+        brain=brain, mentions=mentions, orchestrator=_FakeOrchestrator(), choices=choices,
+    )
+    await choices.add(
+        PendingChoice(
+            id="c1", chat_id=CHAT, message_id=7, requester_id=CEO_ID,
+            options=["A) раз", "B) два", "C) три"],
+        )
+    )
+
+    router = build_brain_router(deps)
+    handler = _get_handler(router, "callback_query", index=1)
+
+    edited: list = []
+    await handler(_choice_callback("brain:choice:c1:1", edited=edited))
+    await asyncio.sleep(0)
+
+    assert brain.handled == [(CHAT, 7, "B) два", CEO_ID)]
+    assert deps.history.added == [(CHAT, "Abdulloh Abbosov", "B) два", False)]
+    assert edited == [None]  # клавиатура снята (reply_markup=None)
+    assert await choices.pop("c1") is None  # выбор уже разобран, не висит повторно
+
+
+async def test_stale_choice_click_is_reported_not_silently_dropped(config, registry, workspaces, choices):
+    from cortex.state import ChatState
+    from cortex.telegram.routing import MentionRouter
+
+    state = ChatState(config.data_dir)
+    mentions = MentionRouter(registry, workspaces, state)
+    brain = _FakeBrain()
+    deps = _FakeDeps(
+        brain=brain, mentions=mentions, orchestrator=_FakeOrchestrator(), choices=choices,
+    )
+
+    router = build_brain_router(deps)
+    handler = _get_handler(router, "callback_query", index=1)
+
+    edited: list = []
+    await handler(_choice_callback("brain:choice:does-not-exist:0", edited=edited))
+    await asyncio.sleep(0)
+
+    assert brain.handled == []
 
 
 async def test_cancel_callback_resolves_pending_as_declined(config, registry, workspaces):

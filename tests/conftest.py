@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from cortex.brain.choices import PendingChoiceStore
 from cortex.config import Config, Secrets
 from cortex.models import Employee
 from cortex.registry import EmployeeRegistry
@@ -66,6 +67,11 @@ def workspaces(config):
 @pytest.fixture()
 def state(config):
     return ChatState(config.data_dir)
+
+
+@pytest.fixture()
+def choices(config):
+    return PendingChoiceStore(config.data_dir / "pending_choices.json")
 
 
 @pytest.fixture()

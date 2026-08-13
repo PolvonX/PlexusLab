@@ -13,11 +13,13 @@ from pathlib import Path
 
 from .agents import SynapseService
 from .brain.agent import BrainAgent
+from .brain.choices import PendingChoiceStore
 from .brain.context import BrainPromptBuilder
 from .brain.pending import PendingActionStore
 from .brain.session import BrainSession
 from .brain.tools.base import BrainToolRegistry
 from .brain.tools.hr import FireEmployeeTool, HireEmployeeTool, WriteJobDescriptionTool
+from .brain.tools.interactive import SendButtonsTool
 from .brain.tools.projects import (
     ArchiveProjectTool,
     CreateProjectTool,
@@ -115,6 +117,7 @@ class PlexusLab:
         )
         mentions = MentionRouter(registry, workspaces, state)
         hr = HRService(cfg, registry, bots)
+        choices = PendingChoiceStore(cfg.data_dir / "pending_choices.json")
 
         self.deps = Deps(
             config=cfg,
@@ -131,6 +134,7 @@ class PlexusLab:
             guard=guard,
             hr=hr,
             synapse=synapse,
+            choices=choices,
         )
 
         brain_tools = BrainToolRegistry()
@@ -141,7 +145,7 @@ class PlexusLab:
                 CreateProjectTool(), LinkProjectTool(), SetChatProjectTool(),
                 UnlinkProjectTool(), ArchiveProjectTool(),
                 AssignTaskTool(), SetListenTool(), BrainSendFileTool(), RequestDigestTool(),
-                ExecuteCommandBrainTool(), SelfExecuteTaskTool(),
+                ExecuteCommandBrainTool(), SelfExecuteTaskTool(), SendButtonsTool(),
             ]
         )
         brain_prompts = BrainPromptBuilder(cfg, registry, workspaces, state, brain_tools)
