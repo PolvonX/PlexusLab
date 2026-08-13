@@ -141,7 +141,7 @@ class Orchestrator:
             typing.cancel()
 
         await self._deliver(task, project_name=project.name, raw_output=result.stdout,
-                            requester_id=requester_id)
+                            stderr=result.stderr, requester_id=requester_id)
 
     # ------------------------------------------------------------------
     async def _deliver(
@@ -150,6 +150,7 @@ class Orchestrator:
         *,
         project_name: str,
         raw_output: str,
+        stderr: str = "",
         requester_id: int,
     ) -> None:
         """Разобрать ответ агента: реплика в чат + исполнение действий."""
@@ -171,12 +172,15 @@ class Orchestrator:
                 )
             )
         elif not actions:
-            await self.bots.say(
-                employee,
-                task.chat_id,
-                "🤷 Агент отработал, но не сказал ни слова и не выполнил действий.",
-                reply_to=task.message_id,
-            )
+            # Известный кейс agy: тул потребовал разрешение, в headless-
+            # режиме подтвердить его некому — agy молча завершается кодом 0
+            # с пустым stdout, а причину пишет только в stderr (живой
+            # инцидент). Без этого CEO видел голое "🤷" без единой зацепки.
+            detail = stderr.strip()
+            text = "🤷 Агент отработал, но не сказал ни слова и не выполнил действий."
+            if detail:
+                text += "\n\n" + fmt.code_block(detail, limit=800)
+            await self.bots.say(employee, task.chat_id, text, reply_to=task.message_id)
 
         if parse_errors:
             await self.bots.say(

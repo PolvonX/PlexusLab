@@ -184,6 +184,36 @@ async def test_crashed_agent_produces_readable_report(env, employee, tmp_path):
     assert "3" in report
 
 
+async def test_silent_success_surfaces_stderr_reason(env, employee, tmp_path):
+    """Живой инцидент: agy требует "command"-разрешение, в headless-режиме
+    подтвердить его некому — agy тихо завершается кодом 0 с пустым stdout,
+    а причину пишет только в stderr, который раньше нигде не показывался
+    при успехе. CEO видел безликое "🤷" и не понимал, что вообще случилось."""
+    cfg, _registry, workspaces, bots, orchestrator = env
+    workspaces.create("sports_api")
+
+    silent = tmp_path / "silent_agent.py"
+    silent.write_text(
+        "import sys\n"
+        "sys.stderr.write('jetski: no output produced — a tool required the "
+        "\"command\" permission that headless mode cannot prompt for, so it "
+        "was auto-denied.\\n')\n"
+        "sys.exit(0)\n",
+        encoding="utf-8",
+    )
+    cfg.raw["agent_runner"]["drivers"]["test"]["command"] = f'"{sys.executable}" "{silent}"'
+
+    task = orchestrator.new_task(
+        employee=employee, project_name="sports_api", instruction="Скачай файл",
+        chat_id=CHAT, message_id=1, requester="CEO",
+    )
+    await orchestrator.dispatch(task, requester_id=1001)
+
+    report = bots.texts()
+    assert "🤷" in report
+    assert "command" in report and "permission" in report
+
+
 async def test_unknown_project_is_reported_not_crashed(env, employee):
     _cfg, _registry, _ws, bots, orchestrator = env
 
