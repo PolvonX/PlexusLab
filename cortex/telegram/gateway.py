@@ -20,9 +20,11 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from ..logging_setup import get_logger
 from ..models import Employee
+from .formatting import esc, split_message
 from .handlers import build_command_router, build_mention_router
 from .hiring import build_hiring_router
 from .middleware import ChatLoggerMiddleware, SecurityMiddleware
@@ -138,6 +140,49 @@ class Gateway:
             )
         except Exception as exc:  # noqa: BLE001
             log.warning("Не удалось доложить CEO: %s", exc)
+
+    # ------------------------------------------------------------------
+    @property
+    def gateway_bot(self) -> Bot:
+        """Собственный бот Cortex — им пользуется мозг, а не BotPool."""
+        if self._gateway_bot is None:
+            raise RuntimeError("Gateway.gateway_bot запрошен до Gateway.start()")
+        return self._gateway_bot
+
+    async def reply(self, chat_id: int, text: str, *, reply_to: int | None = None) -> None:
+        """Ответ от лица самого Cortex (не сотрудника) — используется мозгом
+        для своей реплики, а не отчёта об инструменте."""
+        bot = self.gateway_bot
+        chunks = split_message(text, self.deps.config.max_message_length)
+        for index, chunk in enumerate(chunks):
+            try:
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text=chunk,
+                    reply_to_message_id=reply_to if index == 0 else None,
+                    disable_web_page_preview=True,
+                )
+            except Exception as exc:  # noqa: BLE001 — битый HTML в ответе мозга
+                log.warning("HTML не принят Telegram (%s), шлю без разметки", exc)
+                await bot.send_message(
+                    chat_id=chat_id, text=chunk, parse_mode=None, disable_web_page_preview=True
+                )
+
+    async def ask_confirmation(self, *, chat_id: int, action_id: str, summary: str, risk: str) -> None:
+        """Кнопки подтверждения для рискованного действия мозга. Берёт
+        только примитивы (не PendingAction) — telegram/ не должен знать про
+        cortex/brain/, зависимость смотрит в обратную сторону."""
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[[
+                InlineKeyboardButton(text="✅ Выполнить", callback_data=f"brain:confirm:{action_id}"),
+                InlineKeyboardButton(text="❌ Отмена", callback_data=f"brain:cancel:{action_id}"),
+            ]]
+        )
+        await self.gateway_bot.send_message(
+            chat_id=chat_id,
+            text=f"⚠️ Подтверди действие ({esc(risk)}): {esc(summary)}",
+            reply_markup=keyboard,
+        )
 
     # ------------------------------------------------------------------
     async def wait(self) -> None:
