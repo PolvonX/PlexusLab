@@ -57,6 +57,14 @@ _SYSTEM_PROMPT_MARK = "\x00PLEXUS_SYSTEM_PROMPT\x00"
 
 #: Предел командной строки Windows (CreateProcess) — 32 767 символов.
 #: Держим запас: превысить его значит получить невнятный OSError.
+#: ВАЖНО: это лимит для настоящих .exe. Для драйверов, чья команда — это
+#: .cmd/.bat (как claude.cmd), реальный потолок — ~8191 символов: такие
+#: файлы всегда идут через cmd.exe /c, а не напрямую через CreateProcess
+#: (см. живой инцидент — claude.cmd падал с "Слишком длинная командная
+#: строка" на промпте+system_prompt всего ~8.5к символов). Для таких
+#: драйверов не полагайся на этот лимит — убирай большие значения из argv
+#: вовсе (prompt_via_stdin для {prompt}, {system_prompt_file} для system
+#: prompt), как это сделано в config.yaml для claude.
 _ARGV_LIMIT = 30_000
 
 
@@ -75,6 +83,7 @@ class AgentRunner:
         driver: RunnerDriver,
         prompt: str,
         prompt_file: Path,
+        system_prompt_file: Path,
         workspace: Path,
         agent: str,
         project: str,
@@ -83,6 +92,7 @@ class AgentRunner:
     ) -> list[str]:
         rendered = driver.command.format(
             prompt_file=str(prompt_file),
+            system_prompt_file=str(system_prompt_file),
             prompt=_PROMPT_MARK,
             system_prompt=_SYSTEM_PROMPT_MARK,
             session_flag=session_flag,
@@ -132,11 +142,14 @@ class AgentRunner:
 
         prompt_file = self._tmp_dir / f"{agent}-{uuid.uuid4().hex[:8]}.md"
         prompt_file.write_text(prompt, encoding="utf-8")
+        system_prompt_file = self._tmp_dir / f"{agent}-{uuid.uuid4().hex[:8]}.system.md"
+        system_prompt_file.write_text(system_prompt or "", encoding="utf-8")
 
         argv = self._build_argv(
             driver=driver,
             prompt=prompt,
             prompt_file=prompt_file,
+            system_prompt_file=system_prompt_file,
             workspace=workspace,
             agent=agent,
             project=project,
@@ -234,6 +247,7 @@ class AgentRunner:
 
         finally:
             prompt_file.unlink(missing_ok=True)
+            system_prompt_file.unlink(missing_ok=True)
 
     # ------------------------------------------------------------------
     @staticmethod

@@ -203,6 +203,73 @@ async def test_cp866_stderr_is_decoded_readably_not_as_mojibake(tmp_path, secret
     assert "Файл не найден" in exc_info.value.stderr
 
 
+async def test_system_prompt_file_is_written_passed_and_cleaned_up(tmp_path, secrets):
+    """--system-prompt-file (claude.cmd driver) reads the system prompt from
+    a temp file instead of argv — needed so it never counts against the
+    cmd.exe command-line ceiling (see test below)."""
+    echo_argv = tmp_path / "echo_argv.py"
+    echo_argv.write_text(
+        "import sys\n"
+        "path = sys.argv[sys.argv.index('--system-prompt-file') + 1]\n"
+        "print('CONTENT=' + open(path, encoding='utf-8').read())\n"
+        "print('PATH=' + path)\n",
+        encoding="utf-8",
+    )
+    cfg = _config_with(
+        tmp_path, secrets, f'"{sys.executable}" "{echo_argv}" --system-prompt-file "{{system_prompt_file}}"'
+    )
+    workspace = tmp_path / "projects" / "sports_api"
+    workspace.mkdir(parents=True)
+
+    result = await AgentRunner(cfg).run(
+        prompt="x", workspace=workspace, agent="Cortex", project="sports_api",
+        system_prompt="Ты Cortex. Строка первая.\nСтрока вторая.",
+    )
+
+    lines = result.stdout.splitlines()
+    assert lines[0] == "CONTENT=Ты Cortex. Строка первая."
+    assert lines[1] == "Строка вторая."
+    written_path = Path(lines[2].removeprefix("PATH="))
+    assert not written_path.exists()  # подчищено в finally
+
+
+async def test_large_prompt_and_system_prompt_never_touch_argv(tmp_path, secrets):
+    """Живой инцидент: prompt (~5.9к симв.) + system_prompt (~2.6к симв.)
+    вместе перевалили за реальный потолок cmd.exe для .cmd-обёрток (~8191)
+    и claude.cmd падал с "Слишком длинная командная строка". С
+    prompt_via_stdin + --system-prompt-file ни один из них больше не
+    участвует в argv, так что даже полностью нереалистично большие значения
+    (в разы больше живого инцидента) не должны представлять никакой
+    проблемы, ведь argv остаётся крошечным независимо от их размера."""
+    echo_stdin = tmp_path / "echo_stdin.py"
+    echo_stdin.write_text(
+        "import sys\n"
+        "sp = sys.argv[sys.argv.index('--system-prompt-file') + 1]\n"
+        "print('PROMPT_LEN=' + str(len(sys.stdin.read())))\n"
+        "print('SYS_LEN=' + str(len(open(sp, encoding='utf-8').read())))\n",
+        encoding="utf-8",
+    )
+    cfg = _config_with(
+        tmp_path,
+        secrets,
+        f'"{sys.executable}" "{echo_stdin}" --system-prompt-file "{{system_prompt_file}}"',
+    )
+    cfg.raw["agent_runner"]["drivers"]["mock"]["prompt_via_stdin"] = True
+    workspace = tmp_path / "projects" / "sports_api"
+    workspace.mkdir(parents=True)
+
+    big_prompt = "п" * 20_000
+    big_system_prompt = "с" * 20_000
+
+    result = await AgentRunner(cfg).run(
+        prompt=big_prompt, workspace=workspace, agent="Cortex", project="sports_api",
+        system_prompt=big_system_prompt,
+    )
+
+    assert f"PROMPT_LEN={len(big_prompt)}" in result.stdout
+    assert f"SYS_LEN={len(big_system_prompt)}" in result.stdout
+
+
 async def test_explicit_driver_overrides_the_configured_default(tmp_path, secrets):
     """The brain passes its own driver (Config.brain_driver) — the default
     agent_runner.driver must not be consulted when one is given explicitly."""

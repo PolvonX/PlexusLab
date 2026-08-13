@@ -75,14 +75,27 @@ agent_runner:
       # бесрасширенный shell-скрипт для Git Bash. asyncio.create_subprocess_exec
       # использует CreateProcess напрямую и умеет доподставлять только .exe —
       # бесрасширенный "claude" находит только Git Bash, но не сам процесс Cortex.
+      #
+      # ⚠ ПРОМПТ И SYSTEM PROMPT НЕ ИДУТ ЧЕРЕЗ ARGV — и это не стиль, а
+      # необходимость. claude.cmd — это .cmd-файл, поэтому Windows всегда
+      # запускает его через cmd.exe /c, а у cmd.exe свой, гораздо более
+      # низкий потолок командной строки — ~8191 символов (а не ~32767 у
+      # CreateProcess напрямую). Промпт с историей чата + системный промпт
+      # регулярно вместе превышают 8191 и роняли claude.cmd с "Слишком
+      # длинная командная строка" (живой инцидент, воспроизведён напрямую).
+      # Поэтому: {prompt} уходит в stdin (prompt_via_stdin: true), а system
+      # prompt — через задокументированный, но не выведенный в --help флаг
+      # --system-prompt-file (проверено вручную: реально читает файл, а не
+      # тихо игнорируется — в отличие от --this-flag-does-not-exist, который
+      # claude.cmd честно отвергает как unknown option).
+      #
       # {session_flag} = "--session-id <uuid>" на первом обращении из чата,
       # "--resume <uuid>" на последующих — подставляет cortex/brain/session.py.
-      # {system_prompt} идёт через ту же безопасную подстановку argv, что и {prompt}.
       command: >
-        claude.cmd -p "{prompt}" --output-format text
-        --system-prompt "{system_prompt}" --tools ""
+        claude.cmd -p --output-format text
+        --system-prompt-file "{system_prompt_file}" --tools ""
         --model sonnet {session_flag}
-      prompt_via_stdin: false
+      prompt_via_stdin: true
       env: {}
 
     mock_claude:
