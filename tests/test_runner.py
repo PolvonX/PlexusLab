@@ -203,6 +203,47 @@ async def test_cp866_stderr_is_decoded_readably_not_as_mojibake(tmp_path, secret
     assert "Файл не найден" in exc_info.value.stderr
 
 
+async def test_legitimate_non_cyrillic_output_is_not_treated_as_garbled(tmp_path, secrets):
+    """Ревью нашло реальный риск ложного срабатывания: детектор кракозябр
+    раньше судил по доле кириллицы/ASCII среди букв, а у мозга и сотрудников
+    в выводе законно бывает китайский (web_research), эмодзи, математические
+    символы и т.п. — такой текст ошибочно перекодировался бы в cp866 и
+    портился. Детектор должен полагаться только на настоящие U+FFFD от
+    decode(errors="replace"), а не на состав алфавита."""
+    script = tmp_path / "cjk_stdout.py"
+    script.write_text(
+        "import sys\n"
+        "sys.stdout.buffer.write('已完成任务 🎉 α+β=γ'.encode('utf-8'))\n",
+        encoding="utf-8",
+    )
+    cfg = _config_with(tmp_path, secrets, f'"{sys.executable}" "{script}"')
+    workspace = tmp_path / "projects" / "sports_api"
+    workspace.mkdir(parents=True)
+
+    result = await AgentRunner(cfg).run(
+        prompt="x", workspace=workspace, agent="QA", project="sports_api"
+    )
+
+    assert result.stdout == "已完成任务 🎉 α+β=γ"
+
+
+async def test_prompt_temp_files_are_cleaned_up_even_when_argv_build_fails(tmp_path, secrets):
+    """Ревью нашло реальный баг: prompt_file/system_prompt_file писались на
+    диск ДО входа в try/finally, так что если _build_argv() падает (лимит
+    командной строки), temp-файлы с реальным содержимым промпта/системного
+    промпта — историей чата и т.п. — оставались в data/prompts_tmp/ навсегда."""
+    cfg = _config_with(tmp_path, secrets, '"{prompt}" fixed-tail-that-does-not-shrink')
+    workspace = tmp_path / "projects" / "sports_api"
+    workspace.mkdir(parents=True)
+
+    with pytest.raises(AgentRunError, match="не помещается в командную строку"):
+        await AgentRunner(cfg).run(
+            prompt="x" * 40_000, workspace=workspace, agent="QA", project="sports_api"
+        )
+
+    assert list((cfg.data_dir / "prompts_tmp").glob("*")) == []
+
+
 async def test_system_prompt_file_is_written_passed_and_cleaned_up(tmp_path, secrets):
     """--system-prompt-file (claude.cmd driver) reads the system prompt from
     a temp file instead of argv — needed so it never counts against the

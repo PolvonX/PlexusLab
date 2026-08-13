@@ -137,7 +137,16 @@ class BrainAgent:
         """resume_retry_done защищает от бесконечного цикла: --resume может
         не найти сессию (в этой среде — регулярно, см. docs/superpowers/plans/
         2026-08-13-cortex-brain.md, Task 4 «Открытый вопрос»), и тогда мы один
-        раз откатываемся на свежую сессию с тем же prompt, а не сдаёмся сразу."""
+        раз откатываемся на свежую сессию с тем же prompt, а не сдаёмся сразу.
+
+        Откат разрешён ТОЛЬКО на iteration == 1: там prompt — это полный
+        build_initial() с историей чата, так что свежая сессия всё равно
+        получает нужный контекст. На iteration > 1 prompt — это короткий
+        build_followup() (просто результат последнего инструмента); отправить
+        его в новую сессию с нуля значит дать claude ответить вообще без
+        понимания, что за задачу он вообще решал — а найдено ревью-агентом,
+        не наблюдалось живьём. Поэтому там сбой --resume считается настоящим
+        сбоем и идёт в чат как ошибка, а не глотается тихой пересборкой."""
         deps = self.deps
         if iteration > deps.config.brain_max_iterations:
             await deps.gateway.reply(
@@ -164,7 +173,7 @@ class BrainAgent:
                     driver=deps.config.brain_driver,
                 )
         except AgentRunError as exc:
-            if is_resume and not resume_retry_done:
+            if is_resume and not resume_retry_done and iteration == 1:
                 log.warning(
                     "Мозг: --resume не нашёл сессию чата %s, начинаю новую: %s", chat_id, exc
                 )
@@ -269,22 +278,32 @@ class BrainAgent:
         )
 
     # ------------------------------------------------------------------
-    async def resolve_pending(self, action_id: str, *, approved: bool) -> None:
+    async def resolve_pending(self, action_id: str, *, chat_id: int, approved: bool) -> None:
         """Второй вход из asyncio.create_task() (brain_router.py, callback
-        подтверждения) — тот же последний рубеж, что и у handle_message."""
+        подтверждения) — тот же последний рубеж, что и у handle_message.
+
+        chat_id приходит от самого callback (а не от pending), потому что
+        pending может быть None (двойной клик, устаревшая кнопка после
+        перезапуска) — а телеграм-сообщение к этому моменту уже переписано
+        на "✅ Подтверждено", так что CEO нужно честно сказать, что на самом
+        деле ничего не выполнилось."""
         pending = await self.pending.pop(action_id)
         if pending is None:
+            await self.deps.gateway.reply(
+                chat_id, "Это действие уже обработано или больше не актуально — повторно не выполняю."
+            )
             return
 
         try:
-            if not approved:
-                result = ToolResult.failure("Действие отменено CEO")
-            else:
-                ctx = BrainToolContext(
-                    deps=self.deps, chat_id=pending.chat_id, requester_id=pending.requester_id
-                )
-                action = Action(tool=pending.tool, args=pending.args)
-                result = await self.tools.dispatch(action, ctx)
+            async with self._locks[pending.chat_id]:
+                if not approved:
+                    result = ToolResult.failure("Действие отменено CEO")
+                else:
+                    ctx = BrainToolContext(
+                        deps=self.deps, chat_id=pending.chat_id, requester_id=pending.requester_id
+                    )
+                    action = Action(tool=pending.tool, args=pending.args)
+                    result = await self.tools.dispatch(action, ctx)
 
             await self._continue_after_result(
                 chat_id=pending.chat_id, message_id=pending.message_id,

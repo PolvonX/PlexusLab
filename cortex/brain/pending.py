@@ -76,6 +76,9 @@ class PendingActionStore:
         except json.JSONDecodeError:
             self._actions = {}
             return
+        if not isinstance(raw, dict):
+            self._actions = {}
+            return
         self._actions = {
             entry["id"]: PendingAction.from_dict(entry) for entry in raw.get("actions", [])
         }

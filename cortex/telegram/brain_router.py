@@ -29,6 +29,21 @@ log = get_logger("brain_router")
 _BACKGROUND: set[asyncio.Task] = set()
 
 
+def _on_background_done(task: asyncio.Task) -> None:
+    """orchestrator.dispatch/brain.* уже сами ловят и репортят в чат все
+    свои ошибки — но если что-то сломается ВНУТРИ их же except-блоков
+    (например, сам gateway.reply не достучится до Telegram), исключение
+    долетит досюда. discard() его не читает, так что раньше такой сбой
+    исчезал молча (до "Task exception was never retrieved" от сборщика
+    мусора) — теперь он хотя бы попадёт в лог."""
+    _BACKGROUND.discard(task)
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        log.error("Фоновая задача %s упала", task.get_name(), exc_info=exc)
+
+
 def build_brain_router(deps: "Deps") -> Router:
     router = Router(name="brain")
 
@@ -76,7 +91,7 @@ def build_brain_router(deps: "Deps") -> Router:
                 name="mention-task",
             )
             _BACKGROUND.add(background)
-            background.add_done_callback(_BACKGROUND.discard)
+            background.add_done_callback(_on_background_done)
             return
 
         # Не адресовано конкретному сотруднику — решает мозг. Только CEO:
@@ -94,7 +109,7 @@ def build_brain_router(deps: "Deps") -> Router:
             name="brain-message",
         )
         _BACKGROUND.add(background)
-        background.add_done_callback(_BACKGROUND.discard)
+        background.add_done_callback(_on_background_done)
 
     # ------------------------------------------------------------------
     @router.callback_query(F.data.startswith("brain:"))
@@ -113,9 +128,13 @@ def build_brain_router(deps: "Deps") -> Router:
         await callback.answer()
 
         background = asyncio.create_task(
-            deps.brain.resolve_pending(action_id, approved=approved), name="brain-resolve"
+            deps.brain.resolve_pending(
+                action_id, chat_id=callback.message.chat.id if callback.message else callback.from_user.id,
+                approved=approved,
+            ),
+            name="brain-resolve",
         )
         _BACKGROUND.add(background)
-        background.add_done_callback(_BACKGROUND.discard)
+        background.add_done_callback(_on_background_done)
 
     return router

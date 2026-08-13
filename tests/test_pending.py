@@ -52,3 +52,15 @@ async def test_state_survives_reload(tmp_path):
     reloaded = PendingActionStore(path)
     reloaded.load()
     assert reloaded.get("p1") is not None
+
+
+@pytest.mark.parametrize("bad_root", ["[]", "123", "null", '"just a string"'])
+def test_survives_non_object_root(tmp_path, bad_root):
+    """Живая находка ревью: json.loads("[]") не кидает JSONDecodeError, но
+    raw.get(...) на списке/примитиве падает с AttributeError — раньше это
+    ронял старт всего Cortex, если pending_actions.json оказывался
+    повреждён именно так (а не просто содержал невалидный JSON)."""
+    path = tmp_path / "pending_actions.json"
+    path.write_text(bad_root, encoding="utf-8")
+    store = PendingActionStore(path)
+    assert store.get("anything") is None

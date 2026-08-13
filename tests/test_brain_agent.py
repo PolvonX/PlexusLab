@@ -157,7 +157,7 @@ async def test_confirmed_pending_action_executes_and_reports(tmp_path, secrets, 
     )
     await agent.pending.add(pending)
 
-    await agent.resolve_pending("p1", approved=True)
+    await agent.resolve_pending("p1", chat_id=CHAT, approved=True)
 
     assert registry.get("Frontend_Dev") is None or registry.get("Frontend_Dev").active is False
 
@@ -175,9 +175,27 @@ async def test_declined_pending_action_does_not_execute(tmp_path, secrets, regis
     )
     await agent.pending.add(pending)
 
-    await agent.resolve_pending("p2", approved=False)
+    await agent.resolve_pending("p2", chat_id=CHAT, approved=False)
 
     assert registry.get("Frontend_Dev").active is True
+
+
+async def test_stale_confirmation_click_tells_ceo_instead_of_staying_silent(
+    tmp_path, secrets, registry, workspaces, state, frontend
+):
+    """Ревью нашло реальный UX-баг: Telegram-сообщение уже переписано на
+    '✅ Подтверждено' до вызова resolve_pending (см. brain_router.py) — если
+    действие тем временем пропало (двойной клик, рестарт), CEO раньше не
+    получал вообще никакого сигнала о том, что на самом деле ничего не
+    произошло."""
+    cfg = _config_with_brain_driver(tmp_path, secrets, tmp_path / "counter.txt")
+    gateway = _FakeGateway()
+    deps = _make_deps(cfg, registry, workspaces, state, gateway)
+    agent = _agent(deps)
+
+    await agent.resolve_pending("no-such-action", chat_id=CHAT, approved=True)
+
+    assert any("уже обработано" in m for m in gateway.messages)
 
 
 class _ExplodingRunner:
@@ -306,4 +324,47 @@ async def test_resume_failure_does_not_retry_forever(tmp_path, secrets, registry
     await agent.handle_message(chat_id=CHAT, message_id=1, text="как ты там?", requester_id=1001)
 
     assert runner.calls == 2  # один --resume, один --session-id — и остановились
+    assert any("не справился" in m for m in gateway.messages)
+
+
+class _ResumeFailsOnSecondIterationRunner:
+    """Первый ход (iteration 1, prompt = build_initial с полной историей)
+    отдаёт вызов инструмента; второй ход (iteration 2, prompt = короткий
+    build_followup) падает — имитирует сбой --resume НЕ на первом ходу."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def run(self, *, session_flag: str, **kwargs) -> AgentResult:
+        self.calls.append(session_flag)
+        if len(self.calls) == 1:
+            return AgentResult(
+                stdout='Смотрю штат.\n<action>{"tool": "list_staff", "args": {}}</action>',
+                stderr="", returncode=0, duration=0.1, command="claude",
+            )
+        raise AgentRunError("сеть моргнула", returncode=1, duration=0.1)
+
+
+async def test_resume_failure_past_first_iteration_is_reported_not_silently_retried(
+    tmp_path, secrets, registry, workspaces, state
+):
+    """Реальная дыра, найденная ревью-агентом (не наблюдалась вживую): если
+    --resume падает не на первом ходу разговора, а посреди многошагового
+    цикла инструментов, старая логика откатывала бы на свежую сессию с тем
+    же prompt — но на iteration > 1 prompt это только короткий результат
+    последнего инструмента, без единого слова о том, какую задачу claude
+    вообще решает. С iteration 2+ такой сбой обязан дойти до чата как
+    честная ошибка, а не тихо продолжиться в сессии без контекста."""
+    cfg = _config_with_brain_driver(tmp_path, secrets, tmp_path / "counter.txt")
+    gateway = _FakeGateway()
+    deps = _make_deps(cfg, registry, workspaces, state, gateway)
+    runner = _ResumeFailsOnSecondIterationRunner()
+    deps.runner = runner
+    agent = _agent(deps)
+    agent.session.mark_used(CHAT)  # чат уже "видели" — сразу --resume с первого хода
+
+    await agent.handle_message(chat_id=CHAT, message_id=1, text="кто в штате?", requester_id=1001)
+
+    assert len(runner.calls) == 2  # iteration 1 (успех) + iteration 2 (провал) — без тихого ретрая
+    assert all(c.startswith("--resume") for c in runner.calls)
     assert any("не справился" in m for m in gateway.messages)

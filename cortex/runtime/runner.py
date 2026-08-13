@@ -22,16 +22,15 @@ from ..models import AgentResult
 log = get_logger("runner")
 
 def _looks_garbled(text: str) -> bool:
-    """Эвристика "кракозябр": были настоящие ошибки декодирования (replace
-    вставил U+FFFD), либо среди букв меньше половины ASCII/кириллицы —
-    похоже, что мы декодировали не тот байтовый поток как UTF-8."""
-    if "�" in text:
-        return True
-    letters = [c for c in text if c.isalpha()]
-    if len(letters) < 4:
-        return False
-    readable = sum(1 for c in letters if ord(c) < 128 or 0x0400 <= ord(c) <= 0x04FF)
-    return readable / len(letters) < 0.5
+    """decode("utf-8", errors="replace") вставляет U+FFFD на каждом байте,
+    который не складывается в валидный UTF-8, — а cp866-кириллица (пробелы
+    и латиница пополам с русскими буквами) на практике всегда даёт хотя бы
+    один такой байт (проверено на всех реальных ошибках claude.cmd/Windows,
+    что мы видели). НЕ судим по доле кириллицы/ASCII среди букв: у мозга и
+    сотрудников в выводе законно бывает не-русский, не-ASCII текст (китайский
+    из web_research, математические символы и т.п.) — по такой эвристике
+    он ошибочно принимался за кракозябры и портился перекодированием."""
+    return "�" in text
 
 
 def _decode_console_bytes(data: bytes) -> str:
@@ -141,38 +140,44 @@ class AgentRunner:
         timeout = timeout or self.config.runner_timeout
 
         prompt_file = self._tmp_dir / f"{agent}-{uuid.uuid4().hex[:8]}.md"
-        prompt_file.write_text(prompt, encoding="utf-8")
         system_prompt_file = self._tmp_dir / f"{agent}-{uuid.uuid4().hex[:8]}.system.md"
-        system_prompt_file.write_text(system_prompt or "", encoding="utf-8")
-
-        argv = self._build_argv(
-            driver=driver,
-            prompt=prompt,
-            prompt_file=prompt_file,
-            system_prompt_file=system_prompt_file,
-            workspace=workspace,
-            agent=agent,
-            project=project,
-            system_prompt=system_prompt or "",
-            session_flag=session_flag,
-        )
-        # В лог и в отчёт об ошибке идёт команда без тела промпта.
-        printable = " ".join(
-            f"<промпт {len(prompt)} симв.>" if arg == prompt
-            else f"<system_prompt {len(system_prompt or '')} симв.>" if system_prompt and arg == system_prompt
-            else arg
-            for arg in argv
-        )
-        log.info("[%s/%s] запуск: %s", project, agent, printable)
-
-        env = {**os.environ, **driver.env}
-        env.setdefault("PYTHONIOENCODING", "utf-8")
-        env["PLEXUS_AGENT"] = agent
-        env["PLEXUS_PROJECT"] = project
 
         started = time.monotonic()
         process: asyncio.subprocess.Process | None = None
         try:
+            # Запись temp-файлов и сборка argv — внутри try: иначе сбой
+            # _build_argv (например, превышение лимита командной строки)
+            # оставлял бы на диске temp-файлы с реальным содержимым
+            # промпта/системного промпта навсегда — finally ниже до них
+            # просто не долетал бы.
+            prompt_file.write_text(prompt, encoding="utf-8")
+            system_prompt_file.write_text(system_prompt or "", encoding="utf-8")
+
+            argv = self._build_argv(
+                driver=driver,
+                prompt=prompt,
+                prompt_file=prompt_file,
+                system_prompt_file=system_prompt_file,
+                workspace=workspace,
+                agent=agent,
+                project=project,
+                system_prompt=system_prompt or "",
+                session_flag=session_flag,
+            )
+            # В лог и в отчёт об ошибке идёт команда без тела промпта.
+            printable = " ".join(
+                f"<промпт {len(prompt)} симв.>" if arg == prompt
+                else f"<system_prompt {len(system_prompt or '')} симв.>" if system_prompt and arg == system_prompt
+                else arg
+                for arg in argv
+            )
+            log.info("[%s/%s] запуск: %s", project, agent, printable)
+
+            env = {**os.environ, **driver.env}
+            env.setdefault("PYTHONIOENCODING", "utf-8")
+            env["PLEXUS_AGENT"] = agent
+            env["PLEXUS_PROJECT"] = project
+
             try:
                 process = await asyncio.create_subprocess_exec(
                     *argv,

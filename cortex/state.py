@@ -32,10 +32,14 @@ class ChatState:
         if not self.path.exists():
             return
         try:
-            self._data = json.loads(self.path.read_text(encoding="utf-8"))
+            loaded = json.loads(self.path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError) as exc:
             log.warning("state.json не читается (%s) — начинаю с чистого листа", exc)
-            self._data = {"chat_projects": {}}
+            loaded = {}
+        if not isinstance(loaded, dict):
+            log.warning("state.json содержит не объект, а %s — начинаю с чистого листа", type(loaded).__name__)
+            loaded = {}
+        self._data = loaded
         self._data.setdefault("chat_projects", {})
 
     def _flush(self) -> None:

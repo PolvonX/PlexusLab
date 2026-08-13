@@ -28,8 +28,8 @@ class _FakeBrain:
     async def handle_message(self, *, chat_id, message_id, text, requester_id):
         self.handled.append((chat_id, message_id, text, requester_id))
 
-    async def resolve_pending(self, action_id, *, approved):
-        self.resolved.append((action_id, approved))
+    async def resolve_pending(self, action_id, *, chat_id, approved):
+        self.resolved.append((action_id, chat_id, approved))
 
 
 @dataclass
@@ -162,13 +162,13 @@ async def test_confirm_callback_resolves_pending(config, registry, workspaces):
     callback = SimpleNamespace(
         data="brain:confirm:abc123",
         from_user=SimpleNamespace(id=CEO_ID),
-        message=SimpleNamespace(edit_text=_noop_reply),
+        message=SimpleNamespace(edit_text=_noop_reply, chat=SimpleNamespace(id=CHAT)),
         answer=_noop_reply,
     )
     await handler(callback)
     await asyncio.sleep(0)
 
-    assert brain.resolved == [("abc123", True)]
+    assert brain.resolved == [("abc123", CHAT, True)]
 
 
 async def test_cancel_callback_resolves_pending_as_declined(config, registry, workspaces):
@@ -186,10 +186,10 @@ async def test_cancel_callback_resolves_pending_as_declined(config, registry, wo
     callback = SimpleNamespace(
         data="brain:cancel:abc123",
         from_user=SimpleNamespace(id=CEO_ID),
-        message=SimpleNamespace(edit_text=_noop_reply),
+        message=SimpleNamespace(edit_text=_noop_reply, chat=SimpleNamespace(id=CHAT)),
         answer=_noop_reply,
     )
     await handler(callback)
     await asyncio.sleep(0)
 
-    assert brain.resolved == [("abc123", False)]
+    assert brain.resolved == [("abc123", CHAT, False)]
