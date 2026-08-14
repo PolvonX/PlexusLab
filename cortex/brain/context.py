@@ -106,3 +106,27 @@ class BrainPromptBuilder:
         if result.detail:
             parts += ["", result.detail]
         return "\n".join(parts)
+
+    def build_custom_tool_failure_followup(
+        self, *, tool_name: str, result: ToolResult, attempt: int, max_attempts: int,
+    ) -> str:
+        """Отдельный от build_followup формат: полный traceback без обрезки
+        по summary, явное напоминание про create_tool и честный счётчик
+        попыток — агент должен понимать, что лимит не бесконечный."""
+        remaining = max_attempts - attempt
+        parts = [
+            f"Инструмент '{tool_name}' упал (попытка {attempt} из {max_attempts}).",
+            "",
+            f"Причина: {result.summary}",
+        ]
+        if result.detail:
+            parts += ["", "Полный вывод/traceback:", result.detail]
+        parts += [
+            "",
+            f"Осталось попыток: {remaining}." if remaining > 0 else "Это была последняя попытка.",
+            f"Если ошибка в самом коде инструмента (опечатка, незапущенный "
+            f"импорт, неверная логика) — перепиши его через create_tool с "
+            f"именем '{tool_name}' ещё раз, новый код заменит старый. Если "
+            f"дело не в коде — попробуй другой подход.",
+        ]
+        return "\n".join(parts)

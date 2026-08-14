@@ -54,7 +54,11 @@ class CreateToolTool(BrainTool):
         "Требует подтверждения CEO: новый код появляется в системе не "
         "бесследно. После подтверждения инструмент сразу доступен по имени "
         "в следующем же ходу — перезапуск сервера не нужен. Контракт: "
-        "sys.argv[1] — путь к JSON-файлу с args, вывод — через stdout."
+        "sys.argv[1] — путь к JSON-файлу с args, вывод — через stdout. "
+        "Если СВОЙ ЖЕ ранее созданный инструмент падает с ошибкой в коде — "
+        "вызови create_tool с тем же именем ещё раз: код перезапишется, "
+        "старая версия не сохраняется. Встроенные инструменты (не твои) "
+        "переопределить нельзя."
     )
     usage = (
         '{"tool": "create_tool", "args": {"name": "count_words", '
@@ -78,8 +82,9 @@ class CreateToolTool(BrainTool):
                 "недопустимое имя (строчные латинские буквы/цифры/_, "
                 "3-40 символов, начинается с буквы)"
             )
-        if self._registry.get(name) is not None:
-            raise ToolError(f"инструмент '{name}' уже существует — выбери другое имя")
+        existing = self._registry.get(name)
+        if existing is not None and not existing.is_custom:
+            raise ToolError(f"'{name}' — встроенный инструмент, его нельзя переопределить")
         if not description:
             raise ToolError("нужно описание (args.description)")
         if not code.strip():
@@ -89,6 +94,7 @@ class CreateToolTool(BrainTool):
                 f"код слишком большой ({len(code)} символов, максимум {_MAX_CODE_CHARS})"
             )
 
+        was_update = existing is not None
         script_path = self._store.save_script(name, code)
         record = CustomToolRecord(
             name=name,
@@ -100,8 +106,9 @@ class CreateToolTool(BrainTool):
         await self._store.add(record)
         self._registry.register(RunCustomToolTool(record))
 
+        verb = "переписан" if was_update else "создан"
         return ToolResult.success(
-            f"Инструмент '{name}' создан и зарегистрирован",
+            f"Инструмент '{name}' {verb} и зарегистрирован",
             f"Файл: {script_path}. Доступен для вызова со следующего хода.",
         )
 
@@ -112,6 +119,7 @@ class RunCustomToolTool(BrainTool):
     обычного встроенного инструмента."""
 
     risk = RiskTier.RISKY
+    is_custom = True
 
     def __init__(self, record: CustomToolRecord) -> None:
         self.name = record.name

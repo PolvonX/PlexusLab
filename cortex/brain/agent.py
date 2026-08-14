@@ -46,6 +46,13 @@ def _describe(action: Action) -> str:
 #: сюда попадать не должно.
 _SESSION_MISSING_MARKERS = ("no conversation found", "session not found", "invalid session id")
 
+#: Сколько раз подряд можно пробовать один и тот же сгенерированный
+#: (create_tool) инструмент, прежде чем сдаться и честно доложить CEO —
+#: без этого предела self-healing loop мог бы крутиться до
+#: brain_max_iterations, сжигая ходы на явно неисправимую с первого раза
+#: ошибку.
+_MAX_CUSTOM_TOOL_ATTEMPTS = 3
+
 
 def _looks_like_missing_session(exc: AgentRunError) -> bool:
     """Отличает 'сессия не найдена' (стоит сбросить и попробовать заново) от
@@ -74,6 +81,9 @@ class BrainAgent:
         self.session = session
         self.pending = pending
         self._locks: dict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
+        #: (chat_id, tool_name) -> детали каждой неудачной попытки подряд —
+        #: self-healing loop для create_tool-инструментов (см. _process_action).
+        self._custom_tool_failures: dict[tuple[int, str], list[str]] = defaultdict(list)
 
     # ------------------------------------------------------------------
     def _brain_workspace(self) -> Path:
@@ -108,7 +118,7 @@ class BrainAgent:
             )
             await self._run_loop(
                 chat_id=chat_id, message_id=message_id, requester_id=requester_id,
-                prompt=prompt, iteration=1,
+                prompt=prompt, iteration=1, original_text=text,
             )
         except Exception as exc:  # noqa: BLE001 — последний рубеж, см. docstring
             await self._report_unexpected_failure(chat_id, message_id, exc)
@@ -152,6 +162,7 @@ class BrainAgent:
         prompt: str,
         iteration: int,
         resume_retry_done: bool = False,
+        original_text: str | None = None,
     ) -> None:
         """resume_retry_done защищает от бесконечного цикла: --resume может
         не найти сессию (в этой среде — регулярно, см. docs/superpowers/plans/
@@ -230,6 +241,7 @@ class BrainAgent:
             await self._run_loop(
                 chat_id=chat_id, message_id=message_id, requester_id=requester_id,
                 prompt=prompt, iteration=iteration, resume_retry_done=True,
+                original_text=original_text,
             )
             return
 
@@ -261,12 +273,13 @@ class BrainAgent:
 
         await self._process_action(
             chat_id=chat_id, message_id=message_id, requester_id=requester_id,
-            action=actions[0], iteration=iteration,
+            action=actions[0], iteration=iteration, original_text=original_text,
         )
 
     # ------------------------------------------------------------------
     async def _process_action(
-        self, *, chat_id: int, message_id: int | None, requester_id: int, action: Action, iteration: int
+        self, *, chat_id: int, message_id: int | None, requester_id: int, action: Action,
+        iteration: int, original_text: str | None = None,
     ) -> None:
         deps = self.deps
         default_tier = self.tools.risk_of(action.tool)
@@ -291,9 +304,55 @@ class BrainAgent:
 
         ctx = BrainToolContext(deps=deps, chat_id=chat_id, requester_id=requester_id)
         result = await self.tools.dispatch(action, ctx)
+
+        tool = self.tools.get(action.tool)
+        is_custom = bool(tool is not None and tool.is_custom)
+        key = (chat_id, action.tool)
+        if is_custom and result.ok:
+            self._custom_tool_failures.pop(key, None)
+        elif is_custom and not result.ok:
+            await self._handle_custom_tool_failure(
+                chat_id=chat_id, message_id=message_id, requester_id=requester_id,
+                tool_name=action.tool, result=result, iteration=iteration,
+                original_text=original_text,
+            )
+            return
+
         await self._continue_after_result(
             chat_id=chat_id, message_id=message_id, requester_id=requester_id,
             tool_name=action.tool, result=result, iteration=iteration,
+            original_text=original_text,
+        )
+
+    # ------------------------------------------------------------------
+    async def _handle_custom_tool_failure(
+        self, *, chat_id: int, message_id: int | None, requester_id: int,
+        tool_name: str, result: ToolResult, iteration: int, original_text: str | None,
+    ) -> None:
+        """Self-healing loop: сгенерированный (create_tool) инструмент упал.
+        До лимита попыток — отдаём ошибку агенту с явным traceback и
+        напоминанием про create_tool, тем же followup-циклом. На лимите —
+        сдаёмся с честным, детерминированным отчётом CEO (не полагаемся на
+        то, что модель сама решит подвести итог хорошо)."""
+        key = (chat_id, tool_name)
+        attempts = self._custom_tool_failures[key]
+        attempts.append(result.detail or result.summary)
+
+        if len(attempts) >= _MAX_CUSTOM_TOOL_ATTEMPTS:
+            report = fmt.custom_tool_giveup_report(
+                tool_name=tool_name, goal=original_text or "", attempts=list(attempts)
+            )
+            del self._custom_tool_failures[key]
+            await self.deps.gateway.reply(chat_id, report, reply_to=message_id)
+            return
+
+        followup = self.prompts.build_custom_tool_failure_followup(
+            tool_name=tool_name, result=result,
+            attempt=len(attempts), max_attempts=_MAX_CUSTOM_TOOL_ATTEMPTS,
+        )
+        await self._run_loop(
+            chat_id=chat_id, message_id=message_id, requester_id=requester_id,
+            prompt=followup, iteration=iteration + 1, original_text=original_text,
         )
 
     # ------------------------------------------------------------------
@@ -336,6 +395,10 @@ class BrainAgent:
             await self._continue_after_result(
                 chat_id=pending.chat_id, message_id=pending.message_id,
                 requester_id=pending.requester_id, tool_name=pending.tool, result=result, iteration=1,
+                # Нет свободного текста CEO в этом потоке (кнопка, не
+                # сообщение) — summary самого действия как разумная замена
+                # "исходной задачи" для итогового отчёта self-healing loop.
+                original_text=pending.summary,
             )
         except Exception as exc:  # noqa: BLE001 — последний рубеж, см. handle_message
             await self._report_unexpected_failure(pending.chat_id, pending.message_id, exc)
@@ -343,10 +406,10 @@ class BrainAgent:
     # ------------------------------------------------------------------
     async def _continue_after_result(
         self, *, chat_id: int, message_id: int | None, requester_id: int,
-        tool_name: str, result: ToolResult, iteration: int,
+        tool_name: str, result: ToolResult, iteration: int, original_text: str | None = None,
     ) -> None:
         followup = self.prompts.build_followup(tool_name=tool_name, result=result)
         await self._run_loop(
             chat_id=chat_id, message_id=message_id, requester_id=requester_id,
-            prompt=followup, iteration=iteration + 1,
+            prompt=followup, iteration=iteration + 1, original_text=original_text,
         )

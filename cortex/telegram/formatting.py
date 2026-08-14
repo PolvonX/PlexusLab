@@ -119,6 +119,20 @@ def agent_error_report(
     return "\n".join(parts)
 
 
+def custom_tool_giveup_report(*, tool_name: str, goal: str, attempts: list[str]) -> str:
+    """Self-healing loop сдался после лимита попыток — CEO должен увидеть,
+    какую задачу мозг решал и что конкретно пробовал на каждом шаге, а не
+    голое "не получилось"."""
+    parts = [f"❌ <b>Инструмент «{esc(tool_name)}» не заработал за {len(attempts)} попытки</b>"]
+    if goal:
+        parts += ["", f"<b>Исходная задача:</b> {esc(goal)}"]
+    parts += ["", "<b>Что пробовал:</b>"]
+    for index, detail in enumerate(attempts, start=1):
+        parts += ["", f"<b>Попытка {index}:</b>", code_block(detail, limit=600)]
+    parts += ["", "<i>Дальше без подсказки не пойдёт — что делаем?</i>"]
+    return "\n".join(parts)
+
+
 def error_report(error: Exception, *, context: str = "") -> str:
     title = getattr(error, "title", None) or "Сбой"
     if isinstance(error, CortexError):

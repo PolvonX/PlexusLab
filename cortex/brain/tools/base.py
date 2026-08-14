@@ -38,6 +38,10 @@ class BrainTool(ABC):
     #: Риск по умолчанию — переопределяется per-tool через
     #: config.yaml -> brain.risk_overrides (см. cortex/brain/risk.py).
     risk: RiskTier = RiskTier.NORMAL
+    #: True только у RunCustomToolTool (brain/tools/custom.py) — отличает
+    #: сгенерированный агентом инструмент от встроенного, чтобы agent.py мог
+    #: включить для него self-healing retry-loop, не трогая остальные.
+    is_custom: bool = False
 
     @abstractmethod
     async def execute(self, action: Action, ctx: BrainToolContext) -> ToolResult:
