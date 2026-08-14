@@ -58,6 +58,7 @@ class _FakeConfig:
     secrets: object = field(default_factory=_FakeConfigSecrets)
     ack_task_start: bool = False
     ceo_name: str = "Abdulloh Abbosov"
+    brain_debounce_seconds: float = 0.01
 
 
 class _FakeHistory:
@@ -136,9 +137,33 @@ async def test_ceo_free_text_goes_to_brain(config, registry, workspaces, fronten
     handler = _get_handler(router, "message")
 
     await handler(_message("кто у нас в штате?"))
-    await asyncio.sleep(0)
+    await asyncio.sleep(0.05)  # окно debounce (0.01с в _FakeConfig) должно истечь
 
     assert brain.handled == [(CHAT, 7, "кто у нас в штате?", CEO_ID)]
+
+
+async def test_several_quick_messages_are_combined_into_one_brain_call(config, registry, workspaces):
+    """Живой инцидент: CEO переслал несколько сообщений подряд, каждое
+    ушло мозгу отдельным ходом вместо одного связного ответа."""
+    from cortex.state import ChatState
+    from cortex.telegram.routing import MentionRouter
+
+    state = ChatState(config.data_dir)
+    mentions = MentionRouter(registry, workspaces, state)
+    brain = _FakeBrain()
+    deps = _FakeDeps(brain=brain, mentions=mentions, orchestrator=_FakeOrchestrator())
+
+    router = build_brain_router(deps)
+    handler = _get_handler(router, "message")
+
+    await handler(_message("первое сообщение"))
+    await handler(_message("второе сообщение"))
+    await handler(_message("третье сообщение"))
+    await asyncio.sleep(0.05)  # окно debounce (0.01с в _FakeConfig) должно истечь
+
+    assert len(brain.handled) == 1
+    chat_id, message_id, text, requester_id = brain.handled[0]
+    assert text == "первое сообщение\n\nвторое сообщение\n\nтретье сообщение"
 
 
 async def test_non_ceo_free_text_is_ignored(config, registry, workspaces):
@@ -190,7 +215,7 @@ async def test_photo_with_caption_reaches_brain(config, registry, workspaces):
     assert matched, "фильтр должен пропускать сообщения с подписью, не только чистый текст"
 
     await handler.callback(message)
-    await asyncio.sleep(0)
+    await asyncio.sleep(0.05)  # окно debounce (0.01с в _FakeConfig) должно истечь
 
     assert brain.handled == [(CHAT, 7, "вот так ты отвечаешь, почини", CEO_ID)]
 

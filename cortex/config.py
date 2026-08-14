@@ -284,3 +284,10 @@ class Config:
     @property
     def brain_risk_overrides(self) -> dict[str, str]:
         return {str(k): str(v) for k, v in (self.brain.get("risk_overrides") or {}).items()}
+
+    @property
+    def brain_debounce_seconds(self) -> float:
+        """Окно тишины перед тем, как отдать накопленные сообщения мозгу
+        одним ходом — иначе десяток пересланных подряд сообщений превращается
+        в десяток независимых ответов Cortex вместо одного связного."""
+        return float(self.brain.get("debounce_seconds", 2.5))

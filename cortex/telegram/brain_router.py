@@ -20,6 +20,7 @@ from ..errors import CortexError
 from ..logging_setup import get_logger
 from ..models import ChatMessage
 from . import formatting as fmt
+from .debounce import MessageDebouncer
 
 if TYPE_CHECKING:  # pragma: no cover
     from ..deps import Deps
@@ -47,6 +48,18 @@ def _on_background_done(task: asyncio.Task) -> None:
 
 def build_brain_router(deps: "Deps") -> Router:
     router = Router(name="brain")
+
+    async def _flush_to_brain(*, chat_id: int, text: str, message_id: int, requester_id: int) -> None:
+        background = asyncio.create_task(
+            deps.brain.handle_message(
+                chat_id=chat_id, message_id=message_id, text=text, requester_id=requester_id,
+            ),
+            name="brain-message",
+        )
+        _BACKGROUND.add(background)
+        background.add_done_callback(_on_background_done)
+
+    debouncer = MessageDebouncer(delay=deps.config.brain_debounce_seconds, flush=_flush_to_brain)
 
     # ------------------------------------------------------------------
     @router.message(StateFilter(None), F.text | F.caption)
@@ -104,17 +117,17 @@ def build_brain_router(deps: "Deps") -> Router:
         if not message.from_user or message.from_user.id != deps.config.secrets.ceo_id:
             return
 
-        background = asyncio.create_task(
-            deps.brain.handle_message(
-                chat_id=message.chat.id,
-                message_id=message.message_id,
-                text=text,
-                requester_id=message.from_user.id,
-            ),
-            name="brain-message",
+        # Через debouncer, а не напрямую: живой инцидент — CEO переслал
+        # разом несколько сообщений, каждое ушло мозгу отдельным ходом,
+        # и в одном случае мозг принял свои же прошлые реплики (пришедшие
+        # форвардом) за дублирующуюся доставку и зациклился на "это эхо".
+        # Короткое окно тишины схлопывает всплеск в один связный ход.
+        debouncer.add(
+            chat_id=message.chat.id,
+            text=text,
+            message_id=message.message_id,
+            requester_id=message.from_user.id,
         )
-        _BACKGROUND.add(background)
-        background.add_done_callback(_on_background_done)
 
     # ------------------------------------------------------------------
     @router.callback_query(F.data.startswith("brain:confirm:") | F.data.startswith("brain:cancel:"))
