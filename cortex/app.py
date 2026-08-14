@@ -18,6 +18,8 @@ from .brain.context import BrainPromptBuilder
 from .brain.pending import PendingActionStore
 from .brain.session import BrainSession
 from .brain.tools.base import BrainToolRegistry
+from .brain.tools.custom import CreateToolTool, RunCustomToolTool
+from .brain.tools.custom_store import CustomToolStore
 from .brain.tools.hr import FireEmployeeTool, HireEmployeeTool, WriteJobDescriptionTool
 from .brain.tools.interactive import SendButtonsTool
 from .brain.tools.projects import (
@@ -148,6 +150,17 @@ class PlexusLab:
                 ExecuteCommandBrainTool(), SelfExecuteTaskTool(), SendButtonsTool(),
             ]
         )
+
+        custom_tools = CustomToolStore(
+            scripts_dir=cfg.data_dir / "brain_tools",
+            registry_path=cfg.data_dir / "custom_tools.json",
+        )
+        # Инструменты, которые мозг уже написал себе в прошлых сессиях,
+        # должны пережить перезапуск — иначе он "забудет", что уже решал
+        # эту задачу, и начнёт писать код заново.
+        for record in custom_tools.all():
+            brain_tools.register(RunCustomToolTool(record))
+        brain_tools.register(CreateToolTool(store=custom_tools, registry=brain_tools))
         brain_prompts = BrainPromptBuilder(cfg, registry, workspaces, state, brain_tools)
         self.deps.brain = BrainAgent(
             deps=self.deps,
