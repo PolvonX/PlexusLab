@@ -290,4 +290,4 @@ class Config:
         """Окно тишины перед тем, как отдать накопленные сообщения мозгу
         одним ходом — иначе десяток пересланных подряд сообщений превращается
         в десяток независимых ответов Cortex вместо одного связного."""
-        return float(self.brain.get("debounce_seconds", 2.5))
+        return float(self.brain.get("debounce_seconds", 1.0))
