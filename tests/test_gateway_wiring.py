@@ -24,3 +24,14 @@ def test_gateway_imports_only_brain_router():
     assert "build_command_router" not in text
     assert "build_hiring_router" not in text
     assert "build_synapse_router" not in text
+
+
+def test_polling_subscribes_to_callback_query():
+    """Живой инцидент: allowed_updates перечислял только "message" и
+    "edited_message" — Telegram никогда не доставлял боту нажатия кнопок
+    (ни risk-подтверждения, ни квизы), и клиент вечно крутил "часики" на
+    кнопке, потому что бот даже не видел callback, не то что отвечал на
+    него через answerCallbackQuery."""
+    source = importlib.import_module("cortex.telegram.gateway").__file__
+    text = open(source, encoding="utf-8").read()
+    assert "callback_query" in text

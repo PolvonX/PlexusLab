@@ -86,7 +86,7 @@ class Gateway:
                     bot,
                     polling_timeout=self.deps.config.polling_timeout,
                     handle_signals=False,
-                    allowed_updates=["message", "edited_message"],
+                    allowed_updates=["message", "edited_message", "callback_query"],
                 )
             except asyncio.CancelledError:
                 raise
