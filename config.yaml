@@ -53,7 +53,14 @@ agent_runner:
       # свободу инструментов, но это НЕ отменяет собственную песочницу путей
       # Cortex (--add-dir ограничивает файловую область, за пределы своего
       # проекта агент выйти не может).
-      command: 'agy -p "{prompt}" --output-format text --add-dir "{workspace}" --print-timeout 14m --dangerously-skip-permissions'
+      #
+      # --model закреплён явно — раньше agy запускался вообще без указания
+      # модели (живой вопрос CEO вскрыл: `agy models` отдаёт вперемешку
+      # Gemini/Claude/GPT-OSS разных тиров, а какой из них дефолтный — нигде
+      # не залогировано и не гарантировано). Сотрудники делают реальную
+      # инженерную работу (пишут код, гоняют команды), поэтому взята модель
+      # того же класса, что и у мозга — не самая дешёвая, зато предсказуемая.
+      command: 'agy -p "{prompt}" --model claude-sonnet-4-6 --output-format text --add-dir "{workspace}" --print-timeout 14m --dangerously-skip-permissions'
       prompt_via_stdin: false
       env: {}
 
