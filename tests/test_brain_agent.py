@@ -311,7 +311,9 @@ async def test_resume_failure_does_not_retry_forever(tmp_path, secrets, registry
 
         async def run(self, **kwargs):
             self.calls += 1
-            raise AgentRunError("что-то настоящее сломалось", returncode=1, duration=0.1)
+            raise AgentRunError(
+                "No conversation found with session ID: ...", returncode=1, duration=0.1
+            )
 
     cfg = _config_with_brain_driver(tmp_path, secrets, tmp_path / "counter.txt")
     gateway = _FakeGateway()
@@ -325,6 +327,42 @@ async def test_resume_failure_does_not_retry_forever(tmp_path, secrets, registry
 
     assert runner.calls == 2  # один --resume, один --session-id — и остановились
     assert any("не справился" in m for m in gateway.messages)
+
+
+async def test_non_session_failure_is_reported_without_resetting_the_session(
+    tmp_path, secrets, registry, workspaces, state
+):
+    """Живой вопрос CEO: что будет, если кончится квота Claude? Раньше ЛЮБОЙ
+    сбой --resume (не только 'сессия не найдена') считался поводом сбросить
+    сессию и попробовать заново с чистой — при исчерпанной квоте это значит
+    бессмысленный сброс рабочей сессии (повтор тоже упрётся в ту же квоту) и
+    CEO теряет контекст разговора без всякой пользы взамен."""
+
+    class _QuotaExhaustedRunner:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def run(self, **kwargs):
+            self.calls += 1
+            raise AgentRunError(
+                "Процесс завершился с кодом 1.", returncode=1, duration=0.1,
+                stderr="Claude AI usage limit reached. Your limit will reset at 3pm.",
+            )
+
+    cfg = _config_with_brain_driver(tmp_path, secrets, tmp_path / "counter.txt")
+    gateway = _FakeGateway()
+    deps = _make_deps(cfg, registry, workspaces, state, gateway)
+    runner = _QuotaExhaustedRunner()
+    deps.runner = runner
+    agent = _agent(deps)
+    agent.session.mark_used(CHAT, "--session-id 11111111-1111-1111-1111-111111111111")
+
+    await agent.handle_message(chat_id=CHAT, message_id=1, text="как ты там?", requester_id=1001)
+
+    assert runner.calls == 1  # ни одной лишней попытки со сброшенной сессией
+    assert any("не справился" in m for m in gateway.messages)
+    # сессия НЕ сброшена — следующий вызов снова попробует --resume тем же id
+    assert agent.session.session_flag(CHAT) == "--resume 11111111-1111-1111-1111-111111111111"
 
 
 class _ResumeFailsOnSecondIterationRunner:

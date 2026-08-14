@@ -39,6 +39,25 @@ def _describe(action: Action) -> str:
     return f"{action.tool}({args_preview})"
 
 
+#: Подстроки, которыми claude.cmd реально сообщает "--resume не нашёл эту
+#: сессию" (см. docs/superpowers/reviews/2026-08-13-cli-reliability-review.md
+#: — рекомендация была найдена ревью, но не применена до живого вопроса
+#: "что будет, если кончится квота claude?"). Никаких других причин отказа
+#: сюда попадать не должно.
+_SESSION_MISSING_MARKERS = ("no conversation found", "session not found", "invalid session id")
+
+
+def _looks_like_missing_session(exc: AgentRunError) -> bool:
+    """Отличает 'сессия не найдена' (стоит сбросить и попробовать заново) от
+    любого другого сбоя claude.cmd — например, исчерпанной квоты. Раньше оба
+    случая ловились одним and тем же except и трактовались как первое: при
+    исчерпанной квоте это означало бессмысленный сброс живой, рабочей сессии
+    (повтор упирается в ту же квоту и тоже падает) — CEO терял контекст
+    разговора без всякой пользы взамен."""
+    text = f"{exc} {exc.stderr}".lower()
+    return any(marker in text for marker in _SESSION_MISSING_MARKERS)
+
+
 class BrainAgent:
     def __init__(
         self,
@@ -146,7 +165,13 @@ class BrainAgent:
         его в новую сессию с нуля значит дать claude ответить вообще без
         понимания, что за задачу он вообще решал — а найдено ревью-агентом,
         не наблюдалось живьём. Поэтому там сбой --resume считается настоящим
-        сбоем и идёт в чат как ошибка, а не глотается тихой пересборкой."""
+        сбоем и идёт в чат как ошибка, а не глотается тихой пересборкой.
+
+        И откат разрешён ТОЛЬКО если ошибка реально похожа на 'сессия не
+        найдена' (_looks_like_missing_session) — иначе, например, исчерпанная
+        квота claude тоже трактовалась бы как проблема сессии и сбрасывала бы
+        рабочую сессию без всякой пользы (повтор всё равно упрётся в ту же
+        квоту), CEO терял бы контекст разговора просто так."""
         deps = self.deps
         if iteration > deps.config.brain_max_iterations:
             await deps.gateway.reply(
@@ -173,7 +198,10 @@ class BrainAgent:
                     driver=deps.config.brain_driver,
                 )
         except AgentRunError as exc:
-            if is_resume and not resume_retry_done and iteration == 1:
+            if (
+                is_resume and not resume_retry_done and iteration == 1
+                and _looks_like_missing_session(exc)
+            ):
                 log.warning(
                     "Мозг: --resume не нашёл сессию чата %s, начинаю новую: %s", chat_id, exc
                 )
