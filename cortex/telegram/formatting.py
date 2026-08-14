@@ -133,6 +133,20 @@ def custom_tool_giveup_report(*, tool_name: str, goal: str, attempts: list[str])
     return "\n".join(parts)
 
 
+_PLAN_STATUS_ICONS = {"pending": "⬜", "in_progress": "🔄", "completed": "✅", "failed": "❌"}
+
+
+def plan_roadmap_report(*, goal: str, subtasks: list[dict]) -> str:
+    """Roadmap для CEO при создании плана (spawn_subtask/create_plan) —
+    берёт только примитивы (не Plan/Subtask), telegram/ не должен знать
+    про cortex/brain/, тот же принцип, что у Gateway.ask_confirmation."""
+    parts = [f"🗺 <b>План:</b> {esc(goal)}", ""]
+    for subtask in subtasks:
+        icon = _PLAN_STATUS_ICONS.get(subtask.get("status", "pending"), "⬜")
+        parts.append(f"{icon} {esc(subtask.get('description', ''))}")
+    return "\n".join(parts)
+
+
 def error_report(error: Exception, *, context: str = "") -> str:
     title = getattr(error, "title", None) or "Сбой"
     if isinstance(error, CortexError):

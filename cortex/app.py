@@ -22,6 +22,8 @@ from .brain.tools.custom import CreateToolTool, RunCustomToolTool
 from .brain.tools.custom_store import CustomToolStore
 from .brain.tools.hr import FireEmployeeTool, HireEmployeeTool, WriteJobDescriptionTool
 from .brain.tools.interactive import SendButtonsTool
+from .brain.plan import PlanStore
+from .brain.tools.plan_tools import CreatePlanTool, GetPlanStatusTool, UpdateSubtaskTool
 from .brain.tools.projects import (
     ArchiveProjectTool,
     CreateProjectTool,
@@ -161,6 +163,12 @@ class PlexusLab:
         for record in custom_tools.all():
             brain_tools.register(RunCustomToolTool(record))
         brain_tools.register(CreateToolTool(store=custom_tools, registry=brain_tools))
+
+        plans = PlanStore(cfg.data_dir / "plans.json")
+        brain_tools.register_all(
+            [CreatePlanTool(store=plans), UpdateSubtaskTool(store=plans), GetPlanStatusTool(store=plans)]
+        )
+
         brain_prompts = BrainPromptBuilder(cfg, registry, workspaces, state, brain_tools)
         self.deps.brain = BrainAgent(
             deps=self.deps,
