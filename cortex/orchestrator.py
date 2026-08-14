@@ -160,7 +160,7 @@ class Orchestrator:
 
         if reply:
             await self.bots.say(
-                employee, task.chat_id, fmt.esc(reply), reply_to=task.message_id
+                employee, task.chat_id, fmt.markdown_to_html(reply), reply_to=task.message_id
             )
             self.history.add(
                 ChatMessage(

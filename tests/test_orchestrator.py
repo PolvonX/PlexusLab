@@ -143,6 +143,33 @@ async def test_action_blocks_do_not_leak_into_chat(env, employee):
     assert "execute_command" not in reply
 
 
+async def test_agent_markdown_reply_is_converted_to_telegram_html(env, employee, tmp_path):
+    """Живой инцидент: self_execute_task (и вообще любой сотрудник) шлёт
+    ответ через тот же _deliver, что и раньше только fmt.esc() — модель
+    пишет **жирным**/### заголовками, CEO видел звёздочки и решётки
+    буквально. Мозг это уже чинили (agent.py), тут та же дыра осталась."""
+    cfg, _registry, workspaces, bots, orchestrator = env
+    workspaces.create("sports_api")
+
+    markdown_agent = tmp_path / "markdown_agent.py"
+    markdown_agent.write_text(
+        "import sys\n"
+        "sys.stdout.write('### Вариант 1\\n\\n**Плюсы:** быстро.\\n')\n",
+        encoding="utf-8",
+    )
+    cfg.raw["agent_runner"]["drivers"]["test"]["command"] = f'"{sys.executable}" "{markdown_agent}"'
+
+    task = orchestrator.new_task(
+        employee=employee, project_name="sports_api", instruction="Исследуй",
+        chat_id=CHAT, message_id=1, requester="CEO",
+    )
+    await orchestrator.dispatch(task, requester_id=1001)
+
+    reply = bots.texts()
+    assert "<b>Плюсы:</b>" in reply
+    assert "**" not in reply
+
+
 async def test_agent_reply_lands_in_history(env, employee):
     _cfg, _registry, workspaces, _bots, orchestrator = env
     workspaces.create("sports_api")
