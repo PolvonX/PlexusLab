@@ -62,6 +62,33 @@ def build_brain_router(deps: "Deps") -> Router:
     debouncer = MessageDebouncer(delay=deps.config.brain_debounce_seconds, flush=_flush_to_brain)
 
     # ------------------------------------------------------------------
+    @router.message(StateFilter(None), F.text == "/clear")
+    async def on_clear(message: Message) -> None:
+        if not message.from_user or message.from_user.id != deps.config.secrets.ceo_id:
+            return
+
+        chat_id = message.chat.id
+        deps.history.clear(chat_id)
+
+        if getattr(deps, "brain", None):
+            if getattr(deps.brain, "session", None):
+                # Без этого /clear стирает только локальные логи — сама
+                # resumed claude-сессия (--resume) продолжает помнить всё,
+                # включая предыдущие ответы, и бот выглядит так, будто
+                # "не забыл" ничего.
+                deps.brain.session.reset(chat_id)
+            if getattr(deps.brain, "pending", None):
+                await deps.brain.pending.clear_by_chat(chat_id)
+        if getattr(deps, "choices", None):
+            await deps.choices.clear_by_chat(chat_id)
+
+        await deps.state.set_active_project(chat_id, None)
+
+        await message.reply(
+            "Контекст и история чата успешно очищены. Cortex готов к работе с чистого листа."
+        )
+
+    # ------------------------------------------------------------------
     @router.message(StateFilter(None), F.text | F.caption)
     async def on_text(message: Message) -> None:
         # message.text — для обычного текста, caption — для фото/файлов с
