@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import shlex
 import time
 import uuid
@@ -65,6 +66,26 @@ _SYSTEM_PROMPT_MARK = "\x00PLEXUS_SYSTEM_PROMPT\x00"
 #: вовсе (prompt_via_stdin для {prompt}, {system_prompt_file} для system
 #: prompt), как это сделано в config.yaml для claude.
 _ARGV_LIMIT = 30_000
+
+#: Живой инцидент: agy падает с "Individual quota reached. Please upgrade
+#: your subscription to increase your limits. Resets in 20m29s." — Cortex
+#: раньше репортил это как обычный фатальный крах и молча бросал задачу.
+#: Паттерн ищем узко (quota + resets in рядом), чтобы не принять за
+#: временную ошибку что-то незнакомое, где авто-ретрай не к месту.
+_QUOTA_COOLDOWN_RE = re.compile(
+    r"quota\s+reached.*?resets?\s+in\s+(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _parse_retry_after(stderr: str) -> float | None:
+    """Секунды до сброса квоты agy, если stderr опознан как временная
+    ошибка — иначе None (ошибка считается фатальной, без авто-ретрая)."""
+    match = _QUOTA_COOLDOWN_RE.search(stderr)
+    if not match or not any(match.groups()):
+        return None
+    hours, minutes, seconds = (int(g) if g else 0 for g in match.groups())
+    return float(hours * 3600 + minutes * 60 + seconds)
 
 
 class AgentRunner:
@@ -245,6 +266,7 @@ class AgentRunner:
                     stderr=stderr,
                     command=printable,
                     duration=duration,
+                    retry_after=_parse_retry_after(stderr),
                 )
 
             log.info("[%s/%s] готово за %.1f с, %d символов", project, agent, duration, len(stdout))

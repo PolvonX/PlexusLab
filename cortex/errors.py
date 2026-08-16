@@ -47,9 +47,14 @@ class AgentRunError(CortexError):
         stderr: str = "",
         command: str = "",
         duration: float = 0.0,
+        retry_after: float | None = None,
     ) -> None:
         super().__init__(message)
         self.returncode = returncode
         self.stderr = stderr
         self.command = command
         self.duration = duration
+        #: Секунды до сброса лимита, если stderr опознан как временная
+        #: (retryable) ошибка вроде квоты agy — None, если ошибка фатальная
+        #: или паттерн не распознан. См. runtime/runner.py::_parse_retry_after.
+        self.retry_after = retry_after

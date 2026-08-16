@@ -119,6 +119,16 @@ def agent_error_report(
     return "\n".join(parts)
 
 
+def agent_retry_notice(*, agent: str, wait_seconds: float, attempt: int, max_attempts: int) -> str:
+    """Квота/rate-limit — временная ошибка: сообщаем, что ждём, а не что сдались."""
+    minutes = round(wait_seconds / 60)
+    wait_text = f"~{minutes} мин" if minutes >= 1 else f"{round(wait_seconds)} с"
+    return (
+        f"⏳ <b>{esc(agent)}</b> упёрся в лимит запросов, жду {wait_text} и "
+        f"попробую снова сам (попытка {attempt} из {max_attempts})."
+    )
+
+
 def custom_tool_giveup_report(*, tool_name: str, goal: str, attempts: list[str]) -> str:
     """Self-healing loop сдался после лимита попыток — CEO должен увидеть,
     какую задачу мозг решал и что конкретно пробовал на каждом шаге, а не

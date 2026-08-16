@@ -241,6 +241,44 @@ async def test_silent_success_surfaces_stderr_reason(env, employee, tmp_path):
     assert "command" in report and "permission" in report
 
 
+async def test_quota_error_triggers_auto_retry(env, employee, tmp_path):
+    """Живой инцидент: agy падает с 'Individual quota reached ... Resets in
+    Xs' — это временная ошибка, Cortex должен сам подождать и повторить
+    задачу, а не бросить её на CEO с 'оставил задачу незакрытой'."""
+    cfg, _registry, workspaces, bots, orchestrator = env
+    workspaces.create("sports_api")
+
+    marker = tmp_path / "retried.marker"
+    quota_agent = tmp_path / "quota_agent.py"
+    quota_agent.write_text(
+        "import sys, pathlib\n"
+        f"marker = pathlib.Path(r'{marker}')\n"
+        "if marker.exists():\n"
+        "    sys.stdout.write('Всё восстановилось.\\n')\n"
+        "else:\n"
+        "    marker.write_text('x')\n"
+        "    sys.stderr.write('Error: Individual quota reached. Please "
+        "upgrade your subscription to increase your limits. "
+        "Resets in 0s.\\n')\n"
+        "    sys.exit(1)\n",
+        encoding="utf-8",
+    )
+    cfg.raw["agent_runner"]["drivers"]["test"]["command"] = (
+        f'"{sys.executable}" "{quota_agent}"'
+    )
+
+    task = orchestrator.new_task(
+        employee=employee, project_name="sports_api", instruction="Скачай mp3",
+        chat_id=CHAT, message_id=1, requester="CEO",
+    )
+    await orchestrator.dispatch(task, requester_id=1001)
+
+    report = bots.texts()
+    assert "упёрся в лимит" in report
+    assert "Всё восстановилось" in report
+    assert "оставил задачу незакрытой" not in report
+
+
 async def test_unknown_project_is_reported_not_crashed(env, employee):
     _cfg, _registry, _ws, bots, orchestrator = env
 

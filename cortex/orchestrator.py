@@ -28,6 +28,12 @@ from .workspace import WorkspaceManager
 
 log = get_logger("orchestrator")
 
+#: Сколько раз авто-ретраить retryable-ошибку (квота/rate-limit), прежде
+#: чем сдаться с обычным отчётом — тот же принцип, что и у self-healing
+#: retry loop мозга (brain/agent.py::_MAX_CUSTOM_TOOL_ATTEMPTS), но для
+#: провалов самого процесса agy, а не кастомных тулов.
+_MAX_AUTO_RETRIES = 2
+
 
 class Orchestrator:
     """Дирижёр: собирает контекст, зовёт сабагента, исполняет его волю."""
@@ -76,8 +82,13 @@ class Orchestrator:
         )
 
     # ------------------------------------------------------------------
-    async def dispatch(self, task: AgentTask, *, requester_id: int) -> None:
-        """Поставить задачу в очередь. Ошибки уходят в чат, не в трейсбек."""
+    async def dispatch(
+        self, task: AgentTask, *, requester_id: int, _retries: int = 0
+    ) -> None:
+        """Поставить задачу в очередь. Ошибки уходят в чат, не в трейсбек.
+
+        `_retries` — внутренний счётчик авто-ретраев retryable-ошибок
+        (квота/rate-limit); внешние вызовы его не передают."""
         info = TaskInfo(
             task_id=task.task_id,
             agent=task.employee.name,
@@ -89,7 +100,12 @@ class Orchestrator:
                 info, lambda: self._execute(task, requester_id=requester_id)
             )
         except AgentRunError as exc:
-            await self._report_agent_failure(task, exc)
+            if exc.retry_after is not None and _retries < _MAX_AUTO_RETRIES:
+                await self._retry_after_cooldown(
+                    task, exc, requester_id=requester_id, retries=_retries + 1
+                )
+            else:
+                await self._report_agent_failure(task, exc)
         except CortexError as exc:
             await self.bots.say(
                 task.employee,
@@ -266,3 +282,27 @@ class Orchestrator:
             ),
             reply_to=task.message_id,
         )
+
+    async def _retry_after_cooldown(
+        self, task: AgentTask, exc: AgentRunError, *, requester_id: int, retries: int
+    ) -> None:
+        """Квота/rate-limit — временная ошибка: ждём кулдаун и сами
+        повторяем ту же задачу, а не бросаем её на CEO."""
+        wait = exc.retry_after or 0.0
+        log.info(
+            "Задача %s: retryable-ошибка (%s), жду %.0f с, попытка %d/%d",
+            task.task_id, exc, wait, retries, _MAX_AUTO_RETRIES,
+        )
+        await self.bots.say(
+            task.employee,
+            task.chat_id,
+            fmt.agent_retry_notice(
+                agent=task.employee.title,
+                wait_seconds=wait,
+                attempt=retries,
+                max_attempts=_MAX_AUTO_RETRIES,
+            ),
+            reply_to=task.message_id,
+        )
+        await asyncio.sleep(wait)
+        await self.dispatch(task, requester_id=requester_id, _retries=retries)
