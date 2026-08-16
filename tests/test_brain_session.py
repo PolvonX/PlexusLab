@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from cortex.brain.session import BrainSession
 
-CHAT = -1003881673794
+CHAT = -100500
 
 
 def test_first_call_uses_session_id_flag(tmp_path):

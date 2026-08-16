@@ -660,22 +660,22 @@ from cortex.brain.session import BrainSession
 
 def test_session_id_is_deterministic_per_chat(tmp_path):
     session = BrainSession(tmp_path)
-    first = session.session_id(-1003881673794)
-    second = session.session_id(-1003881673794)
+    first = session.session_id(<GROUP_ID>)
+    second = session.session_id(<GROUP_ID>)
     assert first == second
     assert session.session_id(12345) != first
 
 
 def test_first_call_uses_session_id_flag(tmp_path):
     session = BrainSession(tmp_path)
-    flag = session.session_flag(-1003881673794)
+    flag = session.session_flag(<GROUP_ID>)
     assert flag.startswith("--session-id ")
-    assert session.session_id(-1003881673794) in flag
+    assert session.session_id(<GROUP_ID>) in flag
 
 
 def test_second_call_resumes(tmp_path):
     session = BrainSession(tmp_path)
-    chat_id = -1003881673794
+    chat_id = <GROUP_ID>
     session.session_flag(chat_id)
     session.mark_used(chat_id)
 
@@ -685,7 +685,7 @@ def test_second_call_resumes(tmp_path):
 
 def test_reset_goes_back_to_session_id(tmp_path):
     session = BrainSession(tmp_path)
-    chat_id = -1003881673794
+    chat_id = <GROUP_ID>
     session.mark_used(chat_id)
     assert session.session_flag(chat_id).startswith("--resume ")
 

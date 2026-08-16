@@ -57,7 +57,7 @@
 * **Вопрос:** Может ли персистентность сессий claude (`--resume`, `~/.claude/projects/*`) подмешивать контент из ДРУГОЙ сессии/проекта, если используется детерминированный `session_id`?
 * **Результат проверки:** **Перекрёстной утечки между разными чатами нет, НО существует сохранение «отравленного» контекста.**
 * **Доказательства:**
-  - [cortex/brain/session.py](file:///C:/Projects/PlexusLab/cortex/brain/session.py#L29-L39) генерирует UUID5 по `chat_id`. Для разных чатов генерируются строго разные UUID (например, `9e30a313...` для лички CEO `5362222283` и `90ebe481...` для группы `-1003881673794`).
+  - [cortex/brain/session.py](file:///C:/Projects/PlexusLab/cortex/brain/session.py#L29-L39) генерирует UUID5 по `chat_id`. Для разных чатов генерируются строго разные UUID (например, `9e30a313...` для лички CEO `<CEO_ID>` и `90ebe481...` для группы `<GROUP_ID>`).
   - **Однако:** При использовании `--resume`, Claude Code CLI загружает всю историю предыдущих ходов текущей сессии из файла `~/.claude/projects/c--Projects-PlexusLab/<session_id>.jsonl`. Если в каком-то из предыдущих вызовов Claude выставил встроенные инструменты и прочитал файлы репозитория, все эти прочитанные файлы и секреты остаются в сохранённой сессии Claude и повторяются в последующих ответах при `--resume`!
 
 ---
@@ -113,7 +113,7 @@ argv = [arg.strip('"') for arg in argv if arg]
 > - **Line 25:** `Bash: find "C:/Projects/PlexusLab/cortex/brain"`
 > - **Line 26:** `Read: C:\Projects\PlexusLab\cortex\brain\context.py` *(отсюда взялось имя функции `_state_block`)*
 > - **Line 31:** `Read: C:\Projects\PlexusLab\employees_registry.json.bak` *(отсюда взялось содержимое `.bak`)*
-> - **Line 33:** `Bash: find "C:/Projects/PlexusLab/data"` *(отсюда взялись имена логов `live_run_*.log` и файлы `chat_5362222283`, `chat_-1003881673794` с числовыми ID)*
+> - **Line 33:** `Bash: find "C:/Projects/PlexusLab/data"` *(отсюда взялись имена логов `live_run_*.log` и файлы `chat_<CEO_ID>`, `chat_<GROUP_ID>` с числовыми ID)*
 > - **Line 40:** `Bash: test -f "C:/Projects/PlexusLab/data/state.json"` *(отсюда взялась информация об отсутствии `state.json`)*
 
 #### Шаг 5: Почему это не воспроизвелось в ручном тестировании
