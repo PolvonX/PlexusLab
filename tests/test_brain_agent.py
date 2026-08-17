@@ -365,6 +365,55 @@ async def test_non_session_failure_is_reported_without_resetting_the_session(
     assert agent.session.session_flag(CHAT) == "--resume 11111111-1111-1111-1111-111111111111"
 
 
+async def test_quota_error_falls_back_to_configured_driver_with_fresh_session(
+    tmp_path, secrets, registry, workspaces, state
+):
+    """Живой инцидент этой сессии: мозг — единственная точка входа для
+    свободных сообщений CEO, и раньше квота на sonnet просто убивала каждый
+    следующий ход без всякого восстановления. С fallback_drivers мозг сразу
+    пробует резервную модель, БЕЗ --resume (свежая сессия)."""
+
+    class _QuotaThenFallbackRunner:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str]] = []  # (driver_name, session_flag)
+
+        async def run(self, *, driver, session_flag: str, **kwargs) -> AgentResult:
+            name = driver.name if driver else "primary"
+            self.calls.append((name, session_flag))
+            if name != "claude_haiku":
+                raise AgentRunError(
+                    "Процесс завершился с кодом 1.", returncode=1, duration=0.1,
+                    stderr="Individual quota reached. Please upgrade your "
+                    "subscription to increase your limits. Resets in 999s.",
+                    retry_after=999.0,
+                )
+            return AgentResult(
+                stdout="Отвечаю с резервной модели.", stderr="",
+                returncode=0, duration=0.3, command="claude",
+            )
+
+    cfg = _config_with_brain_driver(tmp_path, secrets, tmp_path / "counter.txt")
+    cfg.raw["brain"]["fallback_drivers"] = ["claude_haiku"]
+    cfg.raw["agent_runner"]["drivers"]["claude_haiku"] = {"command": "unused"}
+    gateway = _FakeGateway()
+    deps = _make_deps(cfg, registry, workspaces, state, gateway)
+    runner = _QuotaThenFallbackRunner()
+    deps.runner = runner
+    agent = _agent(deps)
+    agent.session.mark_used(CHAT, "--session-id 11111111-1111-1111-1111-111111111111")
+
+    await agent.handle_message(chat_id=CHAT, message_id=1, text="как ты там?", requester_id=1001)
+
+    assert len(runner.calls) == 2
+    assert runner.calls[0][0] == "primary"
+    assert runner.calls[0][1] == "--resume 11111111-1111-1111-1111-111111111111"
+    assert runner.calls[1][0] == "claude_haiku"
+    assert runner.calls[1][1].startswith("--session-id")  # fresh session, no --resume
+    assert any("резервную модель" in m or "резервной модели" in m for m in gateway.messages)
+    # исходная сессия для primary НЕ тронута — следующий обычный ход снова резюмирует sonnet
+    assert agent.session.session_flag(CHAT) == "--resume 11111111-1111-1111-1111-111111111111"
+
+
 class _ResumeFailsOnSecondIterationRunner:
     """Первый ход (iteration 1, prompt = build_initial с полной историей)
     отдаёт вызов инструмента; второй ход (iteration 2, prompt = короткий

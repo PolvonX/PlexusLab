@@ -163,6 +163,7 @@ class BrainAgent:
         iteration: int,
         resume_retry_done: bool = False,
         original_text: str | None = None,
+        fallback_attempt: int = 0,
     ) -> None:
         """resume_retry_done защищает от бесконечного цикла: --resume может
         не найти сессию (в этой среде — регулярно, см. docs/superpowers/plans/
@@ -192,7 +193,13 @@ class BrainAgent:
             )
             return
 
-        session_flag = self.session.session_flag(chat_id)
+        fallbacks = deps.config.brain_fallback_drivers
+        if fallback_attempt > 0:
+            driver = fallbacks[fallback_attempt - 1]
+            session_flag = f"--session-id {uuid.uuid4()}"
+        else:
+            driver = None
+            session_flag = self.session.session_flag(chat_id)
         is_resume = session_flag.startswith("--resume")
         typing = asyncio.create_task(self._keep_typing(chat_id))
         result = None
@@ -206,7 +213,7 @@ class BrainAgent:
                     timeout=deps.config.runner_timeout,
                     system_prompt=self.prompts.persona(),
                     session_flag=session_flag,
-                    driver=deps.config.brain_driver,
+                    driver=driver,
                 )
         except AgentRunError as exc:
             if (
@@ -222,6 +229,19 @@ class BrainAgent:
                 # оба падают — похоже на коллизию npm-обёртки/её временных
                 # файлов при повторном старте процесса без паузы.
                 await asyncio.sleep(1.5)
+            elif exc.retry_after is not None and fallback_attempt < len(fallbacks):
+                next_driver = fallbacks[fallback_attempt]
+                log.warning(
+                    "Мозг: retryable-ошибка (%s), пробую fallback-драйвер %s чата %s",
+                    exc, next_driver.name, chat_id,
+                )
+                typing.cancel()
+                await self._run_loop(
+                    chat_id=chat_id, message_id=message_id, requester_id=requester_id,
+                    prompt=prompt, iteration=iteration, resume_retry_done=resume_retry_done,
+                    original_text=original_text, fallback_attempt=fallback_attempt + 1,
+                )
+                return
             else:
                 await deps.gateway.reply(
                     chat_id,
@@ -245,7 +265,11 @@ class BrainAgent:
             )
             return
 
-        self.session.mark_used(chat_id, session_flag)
+        if fallback_attempt == 0:
+            # Fallback-ответы не персистятся как resume-сессия основной
+            # модели — следующий обычный ход снова пробует основную модель
+            # с её собственной (нетронутой) сохранённой сессией.
+            self.session.mark_used(chat_id, session_flag)
 
         actions, parse_errors = extract_actions(result.stdout)
         reply_text = strip_actions(result.stdout)
