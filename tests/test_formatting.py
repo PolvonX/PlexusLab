@@ -37,3 +37,13 @@ def test_bold_does_not_span_across_lines():
     иначе один непарный ** случайно склеит два несвязанных абзаца в тег."""
     text = "**начало\nконец**"
     assert markdown_to_html(text) == "**начало\nконец**"
+
+
+def test_agent_fallback_notice_names_the_fallback_driver():
+    from cortex.telegram import formatting as fmt
+
+    text = fmt.agent_fallback_notice(
+        agent="Frontend_Dev", driver_name="claude_haiku", attempt=1, total=1
+    )
+    assert "Frontend_Dev" in text
+    assert "claude_haiku" in text

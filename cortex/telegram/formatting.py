@@ -129,6 +129,14 @@ def agent_retry_notice(*, agent: str, wait_seconds: float, attempt: int, max_att
     )
 
 
+def agent_fallback_notice(*, agent: str, driver_name: str, attempt: int, total: int) -> str:
+    """Переключаемся на резервную Claude-модель сразу, без ожидания кулдауна."""
+    return (
+        f"🔀 <b>{esc(agent)}</b> упёрся в лимит запросов — пробую резервную "
+        f"модель (<code>{esc(driver_name)}</code>), попытка {attempt} из {total}."
+    )
+
+
 def custom_tool_giveup_report(*, tool_name: str, goal: str, attempts: list[str]) -> str:
     """Self-healing loop сдался после лимита попыток — CEO должен увидеть,
     какую задачу мозг решал и что конкретно пробовал на каждом шаге, а не
