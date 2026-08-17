@@ -64,9 +64,13 @@ class _FakeConfig:
 class _FakeHistory:
     def __init__(self) -> None:
         self.added: list[tuple] = []
+        self.cleared: list[int] = []
 
     def add(self, message) -> None:
         self.added.append((message.chat_id, message.author, message.text, message.is_agent))
+
+    def clear(self, chat_id: int) -> None:
+        self.cleared.append(chat_id)
 
 
 @dataclass
@@ -95,10 +99,20 @@ async def _noop_reply(*args, **kwargs):
     return None
 
 
-def _get_handler(router, message_or_callback_type: str, index: int = 0):
-    """Достаём обработчик нужного observer'а из router по позиции."""
+def _get_full_handler(router, message_or_callback_type: str, name: str):
+    """Достаём хендлер по имени callback-функции, а не по позиции —
+    позиция плывёт, когда в router.py добавляют новый хендлер (живой
+    инцидент: вставка /clear-хендлера первым сдвинула индексы и тихо
+    заставила эти тесты дёргать не тот обработчик)."""
     observer = getattr(router, message_or_callback_type)
-    return observer.handlers[index].callback
+    for handler in observer.handlers:
+        if handler.callback.__name__ == name:
+            return handler
+    raise ValueError(f"Хендлер '{name}' не найден в router.{message_or_callback_type}")
+
+
+def _get_handler(router, message_or_callback_type: str, name: str):
+    return _get_full_handler(router, message_or_callback_type, name).callback
 
 
 async def test_mention_bypasses_brain(config, registry, workspaces, frontend):
@@ -115,7 +129,7 @@ async def test_mention_bypasses_brain(config, registry, workspaces, frontend):
     deps = _FakeDeps(brain=brain, mentions=mentions, orchestrator=orchestrator)
 
     router = build_brain_router(deps)
-    handler = _get_handler(router, "message")
+    handler = _get_handler(router, "message", "on_text")
 
     await handler(_message("@Frontend_Dev почини хедер #sports_api"))
     await asyncio.sleep(0)  # дать шанс фоновой asyncio.create_task(...) выполниться
@@ -134,7 +148,7 @@ async def test_ceo_free_text_goes_to_brain(config, registry, workspaces, fronten
     deps = _FakeDeps(brain=brain, mentions=mentions, orchestrator=_FakeOrchestrator())
 
     router = build_brain_router(deps)
-    handler = _get_handler(router, "message")
+    handler = _get_handler(router, "message", "on_text")
 
     await handler(_message("кто у нас в штате?"))
     await asyncio.sleep(0.05)  # окно debounce (0.01с в _FakeConfig) должно истечь
@@ -154,7 +168,7 @@ async def test_several_quick_messages_are_combined_into_one_brain_call(config, r
     deps = _FakeDeps(brain=brain, mentions=mentions, orchestrator=_FakeOrchestrator())
 
     router = build_brain_router(deps)
-    handler = _get_handler(router, "message")
+    handler = _get_handler(router, "message", "on_text")
 
     await handler(_message("первое сообщение"))
     await handler(_message("второе сообщение"))
@@ -176,7 +190,7 @@ async def test_non_ceo_free_text_is_ignored(config, registry, workspaces):
     deps = _FakeDeps(brain=brain, mentions=mentions, orchestrator=_FakeOrchestrator())
 
     router = build_brain_router(deps)
-    handler = _get_handler(router, "message")
+    handler = _get_handler(router, "message", "on_text")
 
     await handler(_message("привет всем", user_id=999999))
 
@@ -199,7 +213,7 @@ async def test_photo_with_caption_reaches_brain(config, registry, workspaces):
     deps = _FakeDeps(brain=brain, mentions=mentions, orchestrator=_FakeOrchestrator())
 
     router = build_brain_router(deps)
-    handler = router.message.handlers[0]
+    handler = _get_full_handler(router, "message", "on_text")
 
     message = SimpleNamespace(
         text=None,
@@ -230,7 +244,7 @@ async def test_confirm_callback_resolves_pending(config, registry, workspaces):
     deps = _FakeDeps(brain=brain, mentions=mentions, orchestrator=_FakeOrchestrator())
 
     router = build_brain_router(deps)
-    handler = _get_handler(router, "callback_query")
+    handler = _get_handler(router, "callback_query", "on_confirmation")
 
     callback = SimpleNamespace(
         data="brain:confirm:abc123",
@@ -282,7 +296,7 @@ async def test_choice_click_feeds_selected_option_back_to_brain(config, registry
     )
 
     router = build_brain_router(deps)
-    handler = _get_handler(router, "callback_query", index=1)
+    handler = _get_handler(router, "callback_query", "on_choice")
 
     edited: list = []
     await handler(_choice_callback("brain:choice:c1:1", edited=edited))
@@ -306,7 +320,7 @@ async def test_stale_choice_click_is_reported_not_silently_dropped(config, regis
     )
 
     router = build_brain_router(deps)
-    handler = _get_handler(router, "callback_query", index=1)
+    handler = _get_handler(router, "callback_query", "on_choice")
 
     edited: list = []
     await handler(_choice_callback("brain:choice:does-not-exist:0", edited=edited))
@@ -325,7 +339,7 @@ async def test_cancel_callback_resolves_pending_as_declined(config, registry, wo
     deps = _FakeDeps(brain=brain, mentions=mentions, orchestrator=_FakeOrchestrator())
 
     router = build_brain_router(deps)
-    handler = _get_handler(router, "callback_query")
+    handler = _get_handler(router, "callback_query", "on_confirmation")
 
     callback = SimpleNamespace(
         data="brain:cancel:abc123",
