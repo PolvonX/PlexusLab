@@ -408,6 +408,43 @@ async def test_non_session_failure_is_reported_without_resetting_the_session(
     assert agent.session.session_flag(CHAT) == "--resume 11111111-1111-1111-1111-111111111111"
 
 
+async def test_malformed_action_block_resets_session_as_degradation_signal(
+    tmp_path, secrets, registry, workspaces, state
+):
+    """Живой инцидент этой сессии: деградировавшая многочасовая сессия
+    начала выдавать <parameter name="tool">...</parameter> вместо
+    контрактного <action>{"tool":...}</action> — парсер это ловит и шлёт
+    предупреждение в чат, но раньше ничего не делал с самой сессией.
+    Теперь битый action-блок — сигнал деградации: следующий ход должен
+    начаться с чистой сессии, а не резюмировать ту же самую."""
+
+    class _MalformedActionRunner:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def run(self, **kwargs) -> AgentResult:
+            self.calls += 1
+            return AgentResult(
+                stdout='<action><parameter name="tool">execute_command</parameter>'
+                '<parameter name="args">{"command": "dir"}</parameter></action>',
+                stderr="", returncode=0, duration=0.2, command="claude",
+            )
+
+    cfg = _config_with_brain_driver(tmp_path, secrets, tmp_path / "counter.txt")
+    gateway = _FakeGateway()
+    deps = _make_deps(cfg, registry, workspaces, state, gateway)
+    runner = _MalformedActionRunner()
+    deps.runner = runner
+    agent = _agent(deps)
+    agent.session.mark_used(CHAT, "--session-id 11111111-1111-1111-1111-111111111111")
+
+    await agent.handle_message(chat_id=CHAT, message_id=1, text="сделай что-нибудь", requester_id=1001)
+
+    assert any("Не разобрал" in m for m in gateway.messages)
+    # сессия сброшена — следующий вызов пойдёт со свежим --session-id
+    assert agent.session.session_flag(CHAT).startswith("--session-id")
+
+
 async def test_quota_error_falls_back_to_configured_driver_with_fresh_session(
     tmp_path, secrets, registry, workspaces, state
 ):
