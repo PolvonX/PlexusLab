@@ -278,6 +278,49 @@ class _ResumeFailsOnceRunner:
         )
 
 
+async def test_primary_turn_uses_brain_driver_not_employee_driver(
+    tmp_path, secrets, registry, workspaces, state
+):
+    """Живой регресс: реализация fallback (см. docs/superpowers/plans/
+    2026-08-16-claude-model-fallback.md, Task 4) один раз передавала
+    driver=None на обычном (не-fallback) ходу, полагаясь на дефолт
+    AgentRunner.run() — а тот по умолчанию берёт config.runner_driver
+    (драйвер СОТРУДНИКОВ, agy), а не config.brain_driver (claude). В
+    проде эти два драйвера разные — этот тест специально держит их
+    разными, чтобы совпадение (оба "claude") в _config_with_brain_driver
+    не маскировало баг."""
+    command = (
+        f'"{sys.executable}" "{ECHO_BRAIN}" --prompt-file {{prompt_file}} '
+        f'--counter-file "{tmp_path / "counter.txt"}"'
+    )
+    raw = {
+        "company": {"name": "Plexus Lab", "ceo_name": "Abdulloh Abbosov"},
+        "paths": {"data_dir": "data", "prompts_dir": "prompts", "projects_dir": "projects"},
+        "agent_runner": {
+            "driver": "agy_stub",  # сотрудники — заведомо ДРУГОЙ драйвер
+            "drivers": {
+                "agy_stub": {"command": "this-should-never-run"},
+                "claude": {"command": command},
+            },
+            "timeout_seconds": 30,
+        },
+        "brain": {"autonomy": "balanced", "max_iterations": 5},
+    }
+    cfg = Config(root=tmp_path, raw=raw, secrets=secrets)
+    cfg.data_dir.mkdir(parents=True, exist_ok=True)
+    cfg.prompts_dir.mkdir(parents=True, exist_ok=True)
+
+    gateway = _FakeGateway()
+    deps = _make_deps(cfg, registry, workspaces, state, gateway)
+    agent = _agent(deps)
+
+    await agent.handle_message(chat_id=CHAT, message_id=1, text="привет", requester_id=1001)
+
+    # Реальный AgentRunner фактически запустил ECHO_BRAIN, а не упал на
+    # "this-should-never-run" — значит был выбран claude (brain_driver).
+    assert not any("не справился" in m for m in gateway.messages)
+
+
 async def test_resume_failure_falls_back_to_a_fresh_session_once(
     tmp_path, secrets, registry, workspaces, state
 ):
@@ -405,7 +448,7 @@ async def test_quota_error_falls_back_to_configured_driver_with_fresh_session(
     await agent.handle_message(chat_id=CHAT, message_id=1, text="как ты там?", requester_id=1001)
 
     assert len(runner.calls) == 2
-    assert runner.calls[0][0] == "primary"
+    assert runner.calls[0][0] == "claude"  # brain_driver, явно передан (не None)
     assert runner.calls[0][1] == "--resume 11111111-1111-1111-1111-111111111111"
     assert runner.calls[1][0] == "claude_haiku"
     assert runner.calls[1][1].startswith("--session-id")  # fresh session, no --resume

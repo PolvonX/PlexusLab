@@ -198,7 +198,7 @@ class BrainAgent:
             driver = fallbacks[fallback_attempt - 1]
             session_flag = f"--session-id {uuid.uuid4()}"
         else:
-            driver = None
+            driver = deps.config.brain_driver
             session_flag = self.session.session_flag(chat_id)
         is_resume = session_flag.startswith("--resume")
         typing = asyncio.create_task(self._keep_typing(chat_id))
