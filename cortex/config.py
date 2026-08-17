@@ -179,6 +179,13 @@ class Config:
         return self._load_driver(name)
 
     @property
+    def vision_driver(self) -> RunnerDriver:
+        """Одноразовый драйвер транскрипции фото в текст — НЕ сессия мозга.
+        PLEXUS_VISION_DRIVER=mock_vision — для отладки без живого claude."""
+        name = os.getenv("PLEXUS_VISION_DRIVER") or "claude_vision"
+        return self._load_driver(name)
+
+    @property
     def runner_fallback_drivers(self) -> list[RunnerDriver]:
         """Fallback-драйверы для сотрудников/self_execute_task, в порядке
         попытки — пробуются сразу при retryable-ошибке, без ожидания

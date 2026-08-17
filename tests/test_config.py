@@ -1,4 +1,4 @@
-﻿# tests/test_config.py
+# tests/test_config.py
 from __future__ import annotations
 
 from cortex.config import Config
@@ -64,3 +64,29 @@ def test_unknown_fallback_driver_name_raises_config_error(tmp_path, secrets):
         assert False, "expected ConfigError"
     except ConfigError:
         pass
+
+
+def test_vision_driver_defaults_to_claude_vision(tmp_path, secrets):
+    raw = _raw()
+    raw["agent_runner"]["drivers"]["claude_vision"] = {
+        "command": 'claude.cmd -p --input-format stream-json --output-format stream-json --tools ""'
+    }
+    cfg = Config(root=tmp_path, raw=raw, secrets=secrets)
+
+    driver = cfg.vision_driver
+
+    assert driver.name == "claude_vision"
+    assert "stream-json" in driver.command
+
+
+def test_vision_driver_env_override(tmp_path, secrets, monkeypatch):
+    raw = _raw()
+    raw["agent_runner"]["drivers"]["mock_vision"] = {
+        "command": 'python "{root}/scripts/mock_vision.py" --prompt-file "{prompt_file}"'
+    }
+    cfg = Config(root=tmp_path, raw=raw, secrets=secrets)
+    monkeypatch.setenv("PLEXUS_VISION_DRIVER", "mock_vision")
+
+    driver = cfg.vision_driver
+
+    assert driver.name == "mock_vision"

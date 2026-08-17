@@ -121,6 +121,27 @@ agent_runner:
       prompt_via_stdin: true
       env: {}
 
+    claude_vision:
+      # Одноразовая транскрипция фото в текст (cortex/vision/describe.py) — НЕ
+      # сессия мозга, НЕ --resume. --tools "" — тот же контур безопасности, что
+      # у мозга (проверено вживую: --tools "Read" читает любой файл на диске
+      # без ограничения, поэтому мозг и транскрипция остаются toolless).
+      # stream-json input/output — так фото уходит как inline base64 content-блок,
+      # без файлового пути, без Read. --no-session-persistence — транскрипция не
+      # оставляет сессионных файлов на диске. Модель — sonnet, не haiku: неверная
+      # транскрипция таблицы — это молчаливо неверные данные, дороже лишнего вызова.
+      command: >
+        claude.cmd -p --input-format stream-json --output-format stream-json
+        --system-prompt-file "{system_prompt_file}" --tools ""
+        --model sonnet --no-session-persistence
+      prompt_via_stdin: true
+      env: {}
+
+    mock_vision:
+      command: 'python "{root}/scripts/mock_vision.py" --prompt-file "{prompt_file}"'
+      prompt_via_stdin: false
+      env: {}
+
   timeout_seconds: 900
   # Защита от переполнения памяти на болтливом агенте.
   max_output_chars: 400000
