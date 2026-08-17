@@ -99,6 +99,14 @@ class PendingActionStore:
                 self._write_unlocked()
             return action
 
+
+    async def clear_by_chat(self, chat_id: int) -> None:
+        async with self._lock:
+            original_len = len(self._actions)
+            self._actions = {k: v for k, v in self._actions.items() if v.chat_id != chat_id}
+            if len(self._actions) != original_len:
+                self._write_unlocked()
+
     # ------------------------------------------------------------------
     def _write_unlocked(self) -> None:
         payload = {"actions": [a.to_dict() for a in self._actions.values()]}

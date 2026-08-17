@@ -89,6 +89,14 @@ class PendingChoiceStore:
                 self._write_unlocked()
             return choice
 
+
+    async def clear_by_chat(self, chat_id: int) -> None:
+        async with self._lock:
+            original_len = len(self._choices)
+            self._choices = {k: v for k, v in self._choices.items() if v.chat_id != chat_id}
+            if len(self._choices) != original_len:
+                self._write_unlocked()
+
     # ------------------------------------------------------------------
     def _write_unlocked(self) -> None:
         payload = {"choices": [c.to_dict() for c in self._choices.values()]}
