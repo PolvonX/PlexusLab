@@ -83,24 +83,32 @@ class Orchestrator:
 
     # ------------------------------------------------------------------
     async def dispatch(
-        self, task: AgentTask, *, requester_id: int, _retries: int = 0
+        self, task: AgentTask, *, requester_id: int, _retries: int = 0, _fallback_attempt: int = 0
     ) -> None:
         """Поставить задачу в очередь. Ошибки уходят в чат, не в трейсбек.
 
-        `_retries` — внутренний счётчик авто-ретраев retryable-ошибок
-        (квота/rate-limit); внешние вызовы его не передают."""
+        `_retries` — внутренний счётчик авто-ретраев retryable-ошибок после
+        кулдауна; `_fallback_attempt` — сколько fallback-драйверов уже
+        испробовано (0 = основной драйвер). Внешние вызовы их не передают."""
         info = TaskInfo(
             task_id=task.task_id,
             agent=task.employee.name,
             project=task.project,
             instruction=task.instruction[:200],
         )
+        fallbacks = self.config.runner_fallback_drivers
+        driver = fallbacks[_fallback_attempt - 1] if _fallback_attempt > 0 else None
         try:
             await self.scheduler.submit(
-                info, lambda: self._execute(task, requester_id=requester_id)
+                info, lambda: self._execute(task, requester_id=requester_id, driver=driver)
             )
         except AgentRunError as exc:
-            if exc.retry_after is not None and _retries < _MAX_AUTO_RETRIES:
+            if exc.retry_after is not None and _fallback_attempt < len(fallbacks):
+                await self._retry_with_fallback(
+                    task, requester_id=requester_id,
+                    retries=_retries, fallback_attempt=_fallback_attempt + 1,
+                )
+            elif exc.retry_after is not None and _retries < _MAX_AUTO_RETRIES:
                 await self._retry_after_cooldown(
                     task, exc, requester_id=requester_id, retries=_retries + 1
                 )
@@ -123,7 +131,7 @@ class Orchestrator:
             )
 
     # ------------------------------------------------------------------
-    async def _execute(self, task: AgentTask, *, requester_id: int) -> None:
+    async def _execute(self, task: AgentTask, *, requester_id: int, driver=None) -> None:
         employee = task.employee
         project = self.workspaces.require(task.project)
 
@@ -152,6 +160,7 @@ class Orchestrator:
                 agent=employee.name,
                 project=project.name,
                 timeout=self.config.runner_timeout,
+                driver=driver,
             )
         finally:
             typing.cancel()
@@ -306,3 +315,29 @@ class Orchestrator:
         )
         await asyncio.sleep(wait)
         await self.dispatch(task, requester_id=requester_id, _retries=retries)
+
+    async def _retry_with_fallback(
+        self, task: AgentTask, *, requester_id: int, retries: int, fallback_attempt: int
+    ) -> None:
+        """Retryable-ошибка и есть неиспробованный fallback-драйвер — пробуем
+        его сразу, без ожидания кулдауна (в отличие от _retry_after_cooldown)."""
+        fallbacks = self.config.runner_fallback_drivers
+        driver = fallbacks[fallback_attempt - 1]
+        log.info(
+            "Задача %s: retryable-ошибка, пробую fallback-драйвер %s (%d/%d)",
+            task.task_id, driver.name, fallback_attempt, len(fallbacks),
+        )
+        await self.bots.say(
+            task.employee,
+            task.chat_id,
+            fmt.agent_fallback_notice(
+                agent=task.employee.title,
+                driver_name=driver.name,
+                attempt=fallback_attempt,
+                total=len(fallbacks),
+            ),
+            reply_to=task.message_id,
+        )
+        await self.dispatch(
+            task, requester_id=requester_id, _retries=retries, _fallback_attempt=fallback_attempt
+        )

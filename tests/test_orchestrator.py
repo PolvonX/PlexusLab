@@ -279,6 +279,83 @@ async def test_quota_error_triggers_auto_retry(env, employee, tmp_path):
     assert "оставил задачу незакрытой" not in report
 
 
+async def test_quota_error_falls_back_to_configured_driver_immediately(env, employee, tmp_path):
+    """Если настроен fallback-драйвер, retryable-ошибка сразу пробует его —
+    без ожидания кулдауна, а не ждёт 'Resets in Xs' как обычный ретрай."""
+    cfg, _registry, workspaces, bots, orchestrator = env
+    workspaces.create("sports_api")
+
+    quota_agent = tmp_path / "quota_agent.py"
+    quota_agent.write_text(
+        "import sys\n"
+        "sys.stderr.write('Error: Individual quota reached. Please "
+        "upgrade your subscription to increase your limits. "
+        "Resets in 999s.\\n')\n"  # долгий кулдаун — если тест долетит до
+        "sys.exit(1)\n",           # него, а не до fallback, тест зависнет
+        encoding="utf-8",
+    )
+    fallback_agent = tmp_path / "fallback_agent.py"
+    fallback_agent.write_text(
+        "import sys\nsys.stdout.write('Ответила резервная модель.\\n')\n",
+        encoding="utf-8",
+    )
+    cfg.raw["agent_runner"]["drivers"]["test"]["command"] = (
+        f'"{sys.executable}" "{quota_agent}"'
+    )
+    cfg.raw["agent_runner"]["drivers"]["test_fallback"] = {
+        "command": f'"{sys.executable}" "{fallback_agent}"'
+    }
+    cfg.raw["agent_runner"]["fallback_drivers"] = ["test_fallback"]
+
+    task = orchestrator.new_task(
+        employee=employee, project_name="sports_api", instruction="Скачай mp3",
+        chat_id=CHAT, message_id=1, requester="CEO",
+    )
+    await orchestrator.dispatch(task, requester_id=1001)
+
+    report = bots.texts()
+    assert "резервную модель" in report
+    assert "Ответила резервная модель" in report
+    assert "оставил задачу незакрытой" not in report
+    assert "упёрся в лимит запросов, жду" not in report  # cooldown path not used
+
+
+async def test_quota_error_uses_cooldown_when_no_fallback_configured(env, employee, tmp_path):
+    """Без fallback_drivers поведение не меняется — старый cooldown-ретрай."""
+    cfg, _registry, workspaces, bots, orchestrator = env
+    workspaces.create("sports_api")
+
+    marker = tmp_path / "retried.marker"
+    quota_agent = tmp_path / "quota_agent2.py"
+    quota_agent.write_text(
+        "import sys, pathlib\n"
+        f"marker = pathlib.Path(r'{marker}')\n"
+        "if marker.exists():\n"
+        "    sys.stdout.write('Восстановилось.\\n')\n"
+        "else:\n"
+        "    marker.write_text('x')\n"
+        "    sys.stderr.write('Error: Individual quota reached. Please "
+        "upgrade your subscription to increase your limits. "
+        "Resets in 0s.\\n')\n"
+        "    sys.exit(1)\n",
+        encoding="utf-8",
+    )
+    cfg.raw["agent_runner"]["drivers"]["test"]["command"] = (
+        f'"{sys.executable}" "{quota_agent}"'
+    )
+    # no fallback_drivers set — cfg.raw["agent_runner"] has no such key
+
+    task = orchestrator.new_task(
+        employee=employee, project_name="sports_api", instruction="Скачай mp3",
+        chat_id=CHAT, message_id=1, requester="CEO",
+    )
+    await orchestrator.dispatch(task, requester_id=1001)
+
+    report = bots.texts()
+    assert "упёрся в лимит запросов, жду" in report
+    assert "Восстановилось" in report
+
+
 async def test_unknown_project_is_reported_not_crashed(env, employee):
     _cfg, _registry, _ws, bots, orchestrator = env
 
