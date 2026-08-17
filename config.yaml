@@ -111,11 +111,24 @@ agent_runner:
       prompt_via_stdin: false
       env: {}
 
+    claude_haiku:
+      # Fallback-модель для мозга/сотрудников при исчерпании квоты sonnet —
+      # тот же контракт, что у claude, только модель полегче.
+      command: >
+        claude.cmd -p --output-format text
+        --system-prompt-file "{system_prompt_file}" --tools ""
+        --model haiku {session_flag}
+      prompt_via_stdin: true
+      env: {}
+
   timeout_seconds: 900
   # Защита от переполнения памяти на болтливом агенте.
   max_output_chars: 400000
   # Сколько символов stderr показывать в отчёте об ошибке.
   stderr_report_chars: 1500
+  # То же самое для сотрудников/self_execute_task — пусто по умолчанию,
+  # чтобы поведение не менялось, пока CEO явно не включит.
+  fallback_drivers: []
 
 # --- Сборка контекста для агента -----------------------------
 context:
@@ -200,3 +213,6 @@ brain:
   # накопленное мозгу одним ходом (живой инцидент: пересылка нескольких
   # сообщений подряд запускала мозг на каждое отдельно).
   debounce_seconds: 1.0
+  # Модели, которые пробуем сразу (без ожидания кулдауна), если sonnet упёрся
+  # в квоту — до перехода на старое поведение "ждать и повторить sonnet".
+  fallback_drivers: []

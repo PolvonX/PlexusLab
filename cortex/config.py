@@ -179,6 +179,20 @@ class Config:
         return self._load_driver(name)
 
     @property
+    def runner_fallback_drivers(self) -> list[RunnerDriver]:
+        """Fallback-драйверы для сотрудников/self_execute_task, в порядке
+        попытки — пробуются сразу при retryable-ошибке, без ожидания
+        кулдауна. Пусто по умолчанию (поведение не меняется)."""
+        names = self.section("agent_runner").get("fallback_drivers") or []
+        return [self._load_driver(str(n)) for n in names]
+
+    @property
+    def brain_fallback_drivers(self) -> list[RunnerDriver]:
+        """Fallback-драйверы для мозга — см. runner_fallback_drivers."""
+        names = self.brain.get("fallback_drivers") or []
+        return [self._load_driver(str(n)) for n in names]
+
+    @property
     def runner_timeout(self) -> int:
         return int(self.section("agent_runner").get("timeout_seconds", 900))
 
