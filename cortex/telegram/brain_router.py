@@ -21,6 +21,7 @@ from ..logging_setup import get_logger
 from ..models import ChatMessage
 from . import formatting as fmt
 from .debounce import MessageDebouncer
+from ..vision.describe import transcribe_photo
 
 if TYPE_CHECKING:  # pragma: no cover
     from ..deps import Deps
@@ -89,13 +90,33 @@ def build_brain_router(deps: "Deps") -> Router:
         )
 
     # ------------------------------------------------------------------
-    @router.message(StateFilter(None), F.text | F.caption)
+    @router.message(StateFilter(None), F.text | F.caption | F.photo)
     async def on_text(message: Message) -> None:
         # message.text — для обычного текста, caption — для фото/файлов с
         # подписью (живой инцидент: CEO прислал скриншот-жалобу с подписью,
         # F.text один её не пропускал вообще, бот молчал — выглядело как
-        # падение). Само фото не разбираем, только подпись.
+        # падение). Фото распознаётся отдельным одноразовым вызовом
+        # (cortex/vision/describe.py) — сама сессия мозга остаётся toolless.
         text = message.text or message.caption or ""
+
+        if message.photo:
+            largest = max(
+                (p for p in message.photo if not p.file_size or p.file_size <= 3_500_000),
+                default=message.photo[-1],
+                key=lambda p: p.file_size or 0,
+            )
+            buf = await deps.gateway.gateway_bot.download(largest.file_id)
+            image_bytes = buf.getvalue() if buf else b""
+            transcript = (
+                await transcribe_photo(image_bytes=image_bytes, deps=deps)
+                if image_bytes else None
+            )
+            photo_block = (
+                f"[Фото распознано]:\n{transcript}" if transcript
+                else "[Фото приложено, распознать не удалось]"
+            )
+            text = f"{text}\n\n{photo_block}" if text else photo_block
+
         if not text or text.startswith("/"):
             return  # слэш-команд больше нет — не отвечаем на призраков старого UX
 

@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 
@@ -73,6 +74,21 @@ class _FakeHistory:
         self.cleared.append(chat_id)
 
 
+class _FakeGatewayBot:
+    def __init__(self, payload: bytes = b"\xff\xd8\xff\xe0fake-jpeg-bytes") -> None:
+        self.payload = payload
+        self.requested_file_ids: list[str] = []
+
+    async def download(self, file_id: str):
+        self.requested_file_ids.append(file_id)
+        return io.BytesIO(self.payload)
+
+
+@dataclass
+class _FakeGateway:
+    gateway_bot: object
+
+
 @dataclass
 class _FakeDeps:
     brain: object
@@ -82,11 +98,13 @@ class _FakeDeps:
     scheduler: object = None
     history: object = field(default_factory=_FakeHistory)
     choices: object = None
+    gateway: object = field(default_factory=lambda: _FakeGateway(gateway_bot=_FakeGatewayBot()))
 
 
-def _message(text: str, user_id: int = CEO_ID):
+def _message(text: str, user_id: int = CEO_ID, *, photo=None):
     return SimpleNamespace(
         text=text,
+        photo=photo,
         chat=SimpleNamespace(id=CHAT),
         message_id=7,
         from_user=SimpleNamespace(id=user_id, full_name="Someone", is_bot=False),
@@ -218,6 +236,7 @@ async def test_photo_with_caption_reaches_brain(config, registry, workspaces):
     message = SimpleNamespace(
         text=None,
         caption="вот так ты отвечаешь, почини",
+        photo=None,
         chat=SimpleNamespace(id=CHAT),
         message_id=7,
         from_user=SimpleNamespace(id=CEO_ID, full_name="CEO", is_bot=False),
@@ -351,3 +370,110 @@ async def test_cancel_callback_resolves_pending_as_declined(config, registry, wo
     await asyncio.sleep(0)
 
     assert brain.resolved == [("abc123", CHAT, False)]
+
+
+def _photo_message(*, caption: str | None = None, user_id: int = CEO_ID):
+    return SimpleNamespace(
+        text=None,
+        caption=caption,
+        photo=[
+            SimpleNamespace(file_id="thumb", file_size=1000),
+            SimpleNamespace(file_id="full", file_size=80000),
+        ],
+        chat=SimpleNamespace(id=CHAT),
+        message_id=7,
+        from_user=SimpleNamespace(id=user_id, full_name="CEO", is_bot=False),
+        reply=_noop_reply,
+        answer=_noop_reply,
+    )
+
+
+async def test_photo_with_caption_and_transcript_reaches_brain_combined(
+    config, registry, workspaces, monkeypatch
+):
+    from cortex.state import ChatState
+    from cortex.telegram.routing import MentionRouter
+
+    async def _fake_transcribe(*, image_bytes, deps):
+        assert image_bytes == b"\xff\xd8\xff\xe0fake-jpeg-bytes"
+        return "| A | B |\n| 1 | 2 |"
+
+    monkeypatch.setattr("cortex.telegram.brain_router.transcribe_photo", _fake_transcribe)
+
+    state = ChatState(config.data_dir)
+    mentions = MentionRouter(registry, workspaces, state)
+    brain = _FakeBrain()
+    gateway_bot = _FakeGatewayBot()
+    deps = _FakeDeps(
+        brain=brain, mentions=mentions, orchestrator=_FakeOrchestrator(),
+        gateway=_FakeGateway(gateway_bot=gateway_bot),
+    )
+
+    router = build_brain_router(deps)
+    handler = _get_handler(router, "message", "on_text")
+
+    await handler(_photo_message(caption="создай такой excel файл"))
+    await asyncio.sleep(0.05)  # окно debounce (0.01с в _FakeConfig) должно истечь
+
+    assert gateway_bot.requested_file_ids == ["full"]  # взят самый крупный вариант
+    assert brain.handled == [
+        (CHAT, 7, "создай такой excel файл\n\n[Фото распознано]:\n| A | B |\n| 1 | 2 |", CEO_ID)
+    ]
+
+
+async def test_bare_photo_without_caption_reaches_brain(config, registry, workspaces, monkeypatch):
+    from cortex.state import ChatState
+    from cortex.telegram.routing import MentionRouter
+
+    async def _fake_transcribe(*, image_bytes, deps):
+        return "Фото стола с ноутбуком."
+
+    monkeypatch.setattr("cortex.telegram.brain_router.transcribe_photo", _fake_transcribe)
+
+    state = ChatState(config.data_dir)
+    mentions = MentionRouter(registry, workspaces, state)
+    brain = _FakeBrain()
+    deps = _FakeDeps(
+        brain=brain, mentions=mentions, orchestrator=_FakeOrchestrator(),
+        gateway=_FakeGateway(gateway_bot=_FakeGatewayBot()),
+    )
+
+    router = build_brain_router(deps)
+    handler = _get_full_handler(router, "message", "on_text")
+
+    message = _photo_message(caption=None)
+    matched, _kwargs = await handler.check(message, state=SimpleNamespace(get_state=lambda: None))
+    assert matched, "фильтр должен пропускать голое фото без подписи"
+
+    await handler.callback(message)
+    await asyncio.sleep(0.05)
+
+    # photo_block всегда несёт префикс "[Фото распознано]:" — даже без
+    # исходного текста, ради единообразия с случаем "подпись + фото"
+    assert brain.handled == [(CHAT, 7, "[Фото распознано]:\nФото стола с ноутбуком.", CEO_ID)]
+
+
+async def test_transcription_failure_reaches_brain_as_honest_note(config, registry, workspaces, monkeypatch):
+    from cortex.state import ChatState
+    from cortex.telegram.routing import MentionRouter
+
+    async def _fake_transcribe(*, image_bytes, deps):
+        return None
+
+    monkeypatch.setattr("cortex.telegram.brain_router.transcribe_photo", _fake_transcribe)
+
+    state = ChatState(config.data_dir)
+    mentions = MentionRouter(registry, workspaces, state)
+    brain = _FakeBrain()
+    deps = _FakeDeps(
+        brain=brain, mentions=mentions, orchestrator=_FakeOrchestrator(),
+        gateway=_FakeGateway(gateway_bot=_FakeGatewayBot()),
+    )
+
+    router = build_brain_router(deps)
+    handler = _get_handler(router, "message", "on_text")
+
+    await handler(_photo_message(caption="глянь"))
+    await asyncio.sleep(0.05)
+
+    assert brain.handled == [(CHAT, 7, "глянь\n\n[Фото приложено, распознать не удалось]", CEO_ID)]
