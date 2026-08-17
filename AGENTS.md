@@ -21,6 +21,17 @@
 
 ## История последних сессий
 
+- **2026-08-17** — Claude Code: нашёл грязное рабочее дерево (`clear_by_chat` на
+  `PendingChoiceStore`/`PendingActionStore` был на диске, но не закоммичен — без него
+  уже закоммиченный `/clear`-фикс (`e1ab424`) звал бы несуществующий метод). Не
+  вредоносно, просто забыли закоммитить — закоммитил отдельно (`1e34da5`). Дальше
+  спроектировал `2026-08-17-brain-photo-vision-design.md`: `brain_router.py` сейчас
+  берёт от фото только подпись, само изображение никуда не идёт. Проверил вживую два
+  варианта — `--tools "Read"` читает вообще любой файл на диске без спроса (не пойдёт
+  для мозга с его многочасовой `--resume`-сессией), `--input-format stream-json` с
+  inline base64-картинкой работает при `--tools ""` (тот же уровень изоляции, что и
+  сегодня) — выбран второй, отдельным одноразовым вызовом, не в сессию мозга. Спека
+  закоммичена, план ещё не писал.
 - **2026-08-17** — Claude Code: доделал план `2026-08-17-brain-session-auto-refresh.md`. Antigravity закоммитил Task 1 (expiry по возрасту/числу ходов в `BrainSession`) и Task 2 (реактивный сброс на битом `<action>`), но упёрся в `--print-timeout` и не дошёл до Task 3 — доделал сам (точечная правка, не стоило нового захода agy): `tests/test_brain_router.py` теперь ищет хендлер по имени callback'а (`_get_full_handler`), а не по жёсткому индексу, который сломала более ранняя вставка `/clear`-хендлера. **Впервые за эту сессию весь тест-сьют зелёный: 275 passed, 0 failed.**
 - **2026-08-17** — Claude Code: код-ревью коммитов Antigravity ниже нашёл реальный баг в `BrainAgent._run_loop` — на обычном (не-fallback) ходу передавался `driver=None`, а дефолт в `AgentRunner.run()` — `config.runner_driver` (драйвер СОТРУДНИКОВ/agy), не `config.brain_driver` (claude). В проде это два разных драйвера — каждый обычный ход мозга пытался бы запускаться через `agy`, а не `claude.cmd`. Тесты не поймали, потому что `_config_with_brain_driver` в test_brain_agent.py случайно алиасит оба на "claude". **Пофикшено** (`driver = deps.config.brain_driver` вместо `None`), плюс регресс-тест, который намеренно держит эти два драйвера разными. 267 passed / те же 4 pre-existing failures.
 - **2026-08-17** — Antigravity: реализовал план `2026-08-16-claude-model-fallback.md` (Tasks 1–4): добавил `claude_haiku` fallback-драйвер в config.yaml, `runner_fallback_drivers`/`brain_fallback_drivers` в `Config`, `agent_fallback_notice` в formatting.py, fallback-логику перед cooldown-retry в `Orchestrator.dispatch`, fallback-логику в `BrainAgent._run_loop` (4 коммита, 266 passed / 4 pre-existing failures в test_brain_router.py).
