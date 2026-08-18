@@ -55,6 +55,7 @@ from .telegram.gateway import Gateway
 from .telegram.routing import MentionRouter
 from .tools import ToolRegistry
 from .tools.execute_command import ExecuteCommandTool
+from .tools.media_fetcher import MediaFetcherTool
 from .tools.send_file import SendFileTool
 from .tools.update_system_prompt import UpdateSystemPromptTool
 from .tools.update_telegram_profile import UpdateTelegramProfileTool
@@ -100,6 +101,7 @@ class PlexusLab:
         tools.register_all(
             [
                 ExecuteCommandTool(),
+                MediaFetcherTool(),
                 SendFileTool(),
                 UpdateTelegramProfileTool(),
                 UpdateSystemPromptTool(),

@@ -1,5 +1,7 @@
+from __future__ import annotations
+
 import asyncio
-from typing import Any, Awaitable, Callable, Dict, List
+from typing import Any, Awaitable, Callable
 
 from ..logging_setup import get_logger
 
@@ -16,15 +18,15 @@ class DAGExecutor:
 
     def __init__(
         self,
-        tasks: List[Dict[str, Any]],
-        runner_func: Callable[[Dict[str, Any]], Awaitable[str]],
+        tasks: list[dict[str, Any]],
+        runner_func: Callable[[dict[str, Any]], Awaitable[str]],
     ) -> None:
         self.tasks = tasks
         self.runner_func = runner_func
-        self.results: Dict[Any, str] = {}
-        self.errors: Dict[Any, str] = {}
+        self.results: dict[Any, str] = {}
+        self.errors: dict[Any, str] = {}
 
-    async def execute(self) -> Dict[str, Any]:
+    async def execute(self) -> dict[str, Any]:
         task_map = {t["id"]: t for t in self.tasks}
         graph = {t["id"]: [] for t in self.tasks}
         in_degree = {t["id"]: len(t.get("depends_on", [])) for t in self.tasks}
@@ -68,7 +70,7 @@ class DAGExecutor:
             "errors": self.errors,
         }
 
-    def _fail_tree(self, failed_tid: Any, graph: Dict[Any, List[Any]]) -> None:
+    def _fail_tree(self, failed_tid: Any, graph: dict[Any, list[Any]]) -> None:
         """Рекурсивно помечаем зависимые задачи как проваленные."""
         for dependent in graph[failed_tid]:
             if dependent not in self.errors:

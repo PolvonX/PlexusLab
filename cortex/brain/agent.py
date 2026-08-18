@@ -45,17 +45,6 @@ def _describe(action: Action) -> str:
 #: "что будет, если кончится квота claude?"). Никаких других причин отказа
 #: сюда попадать не должно.
 _SESSION_MISSING_MARKERS = ("no conversation found", "session not found", "invalid session id")
-
-#: Маркеры семантического отказа от LLM (Content Policy / Safety Filters)
-REFUSAL_MARKERS = (
-    "i cannot fulfill",
-    "i apologize, but",
-    "не могу выполнить",
-    "i cannot",
-    "i am unable to",
-    "i'm sorry, but i can't",
-)
-
 #: Сколько раз подряд можно пробовать один и тот же сгенерированный
 #: (create_tool) инструмент, прежде чем сдаться и честно доложить CEO —
 #: без этого предела self-healing loop мог бы крутиться до
@@ -285,30 +274,6 @@ class BrainAgent:
         reply_text = strip_actions(result.stdout)
 
         if reply_text:
-            text_lower = reply_text.lower()
-            if any(marker in text_lower for marker in REFUSAL_MARKERS):
-                log.warning("Мозг: обнаружен семантический отказ (Content Policy). Перенаправляю FallbackAgent'у.")
-                fallback_employee = deps.registry.get("FallbackAgent")
-                if fallback_employee:
-                    task = AgentTask(
-                        employee=fallback_employee,
-                        project=_BRAIN_PROJECT,
-                        instruction=original_text or prompt,
-                        chat_id=chat_id,
-                        message_id=message_id or 0,
-                        requester=str(requester_id),
-                        task_id=uuid.uuid4().hex[:8]
-                    )
-                    await deps.orchestrator.dispatch(task, requester_id=requester_id)
-                    await deps.gateway.reply(
-                        chat_id, 
-                        "⚠️ Запрос заблокирован фильтрами основной модели. Передаю резервному сабагенту (FallbackAgent)...", 
-                        reply_to=message_id
-                    )
-                    return
-                else:
-                    log.warning("FallbackAgent не найден в реестре, отказ будет отправлен пользователю.")
-
             await deps.gateway.reply(chat_id, fmt.markdown_to_html(reply_text), reply_to=message_id)
             deps.history.add(
                 ChatMessage(

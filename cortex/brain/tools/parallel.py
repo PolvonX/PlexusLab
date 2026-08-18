@@ -1,6 +1,8 @@
-from typing import Any, Dict
+from __future__ import annotations
 
-from ...errors import ToolError
+from typing import Any
+
+from ...errors import AgentRunError, ToolError
 from ...models import Action, AgentTask, ToolResult
 from ...runtime.dag_executor import DAGExecutor
 from ...runtime.queue import TaskInfo
@@ -35,7 +37,7 @@ class SpawnParallelTasksTool(BrainTool):
             raise ToolError("нужен project (args.project)")
         project = ctx.deps.workspaces.require(project_name)
 
-        async def runner_func(task_data: Dict[str, Any]) -> str:
+        async def runner_func(task_data: dict[str, Any]) -> str:
             task_id_str = str(task_data["id"])
             task_text = str(task_data.get("task", ""))
             
@@ -77,18 +79,19 @@ class SpawnParallelTasksTool(BrainTool):
                     tools_doc=ctx.deps.tools.docs_for(employee),
                 )
 
-                result = await ctx.deps.orchestrator.runner.run(
-                    prompt=prompt,
-                    workspace=project.path,
-                    agent=employee.name,
-                    project=project.name,
-                    timeout=ctx.deps.config.runner_timeout,
-                )
-                
-                if result.returncode != 0:
-                    error_msg = f"Процесс завершился с кодом {result.returncode}.\n{result.stderr}"
-                    raise RuntimeError(error_msg)
-                
+                try:
+                    result = await ctx.deps.orchestrator.runner.run(
+                        prompt=prompt,
+                        workspace=project.path,
+                        agent=employee.name,
+                        project=project.name,
+                        timeout=ctx.deps.config.runner_timeout,
+                    )
+                except AgentRunError as exc:
+                    # AgentRunner.run() бросает AgentRunError при ненулевом коде
+                    # или таймауте — пробрасываем как RuntimeError, чтобы
+                    # DAGExecutor корректно записал ошибку в errors[tid].
+                    raise RuntimeError(str(exc)) from exc
                 return result.stdout
 
             return await ctx.deps.orchestrator.scheduler.submit(info, _run_agent)

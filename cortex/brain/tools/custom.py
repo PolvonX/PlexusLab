@@ -146,5 +146,3 @@ class RunCustomToolTool(BrainTool):
             )
         finally:
             args_file.unlink(missing_ok=True)
-
-
