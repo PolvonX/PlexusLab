@@ -90,3 +90,20 @@ def test_vision_driver_env_override(tmp_path, secrets, monkeypatch):
     driver = cfg.vision_driver
 
     assert driver.name == "mock_vision"
+
+
+def test_real_config_yaml_claude_vision_driver_has_verbose_flag():
+    """Живой инцидент: claude.cmd падает с "requires --verbose" при
+    --output-format stream-json под -p — --tools "" + stream-json без
+    --verbose незаметно ломает продовый вызов транскрипции фото, а
+    синтетические тесты driver-резолюции выше этого не ловят, потому что
+    сами пишут command с нуля. Читаем реальный config.yaml напрямую."""
+    from pathlib import Path
+
+    import yaml
+
+    root = Path(__file__).resolve().parent.parent
+    raw = yaml.safe_load((root / "config.yaml").read_text(encoding="utf-8"))
+    command = raw["agent_runner"]["drivers"]["claude_vision"]["command"]
+
+    assert "--verbose" in command

@@ -130,10 +130,13 @@ agent_runner:
       # без файлового пути, без Read. --no-session-persistence — транскрипция не
       # оставляет сессионных файлов на диске. Модель — sonnet, не haiku: неверная
       # транскрипция таблицы — это молчаливо неверные данные, дороже лишнего вызова.
+      # --verbose обязателен: без него claude.cmd отказывается запускаться с
+      # --output-format stream-json под -p ("requires --verbose") — живой
+      # инцидент, воспроизведено напрямую (см. tests/test_config.py).
       command: >
         claude.cmd -p --input-format stream-json --output-format stream-json
         --system-prompt-file "{system_prompt_file}" --tools ""
-        --model sonnet --no-session-persistence
+        --model sonnet --no-session-persistence --verbose
       prompt_via_stdin: true
       env: {}
 
