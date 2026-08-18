@@ -213,6 +213,7 @@ tools:
       - update_telegram_profile
       - update_system_prompt
       - web_research
+      - media_fetcher
 
 # --- Synapse (COO / Директор по инновациям) ------------------
 synapse:

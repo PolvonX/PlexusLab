@@ -22,6 +22,7 @@ from .brain.tools.custom import CreateToolTool, RunCustomToolTool
 from .brain.tools.custom_store import CustomToolStore
 from .brain.tools.hr import FireEmployeeTool, HireEmployeeTool, WriteJobDescriptionTool
 from .brain.tools.interactive import SendButtonsTool
+from .brain.tools.memory import MemorizeFactTool, RecallMemoryTool
 from .brain.plan import PlanStore
 from .brain.tools.plan_tools import CreatePlanTool, GetPlanStatusTool, UpdateSubtaskTool
 from .brain.tools.projects import (
@@ -34,6 +35,7 @@ from .brain.tools.projects import (
 from .brain.tools.read import GetEmployeeTool, GetStatusTool, ListProjectsTool, ListStaffTool
 from .brain.tools.self_work import SelfExecuteTaskTool
 from .brain.tools.shell_tool import ExecuteCommandBrainTool
+from .brain.tools.parallel import SpawnParallelTasksTool
 from .brain.tools.work import AssignTaskTool, RequestDigestTool, SetListenTool
 from .brain.tools.work import SendFileTool as BrainSendFileTool
 from .config import Config
@@ -42,6 +44,7 @@ from .deps import Deps
 from .errors import CortexError
 from .hr import HRService
 from .logging_setup import get_logger, setup_logging
+from .memory import VectorStore
 from .orchestrator import Orchestrator
 from .registry import EmployeeRegistry
 from .runtime import AgentRunner, TaskScheduler
@@ -141,6 +144,8 @@ class PlexusLab:
             choices=choices,
         )
 
+        vector_store = VectorStore(data_dir=cfg.data_dir)
+
         brain_tools = BrainToolRegistry()
         brain_tools.register_all(
             [
@@ -150,6 +155,8 @@ class PlexusLab:
                 UnlinkProjectTool(), ArchiveProjectTool(),
                 AssignTaskTool(), SetListenTool(), BrainSendFileTool(), RequestDigestTool(),
                 ExecuteCommandBrainTool(), SelfExecuteTaskTool(), SendButtonsTool(),
+                SpawnParallelTasksTool(),
+                MemorizeFactTool(vector_store), RecallMemoryTool(vector_store),
             ]
         )
 

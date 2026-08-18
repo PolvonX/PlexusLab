@@ -39,6 +39,7 @@ from ...models import Action, ToolResult
 from ..risk import RiskTier
 from .base import BrainTool, BrainToolContext, BrainToolRegistry
 from .custom_store import CustomToolRecord, CustomToolStore
+from ...runtime.sandbox import SandboxExecutor
 
 _NAME_RE = re.compile(r"^[a-z][a-z0-9_]{2,40}$")
 _MAX_CODE_CHARS = 20_000
@@ -133,52 +134,17 @@ class RunCustomToolTool(BrainTool):
         args_file = workspace / f".custom_tool_args_{uuid.uuid4().hex[:8]}.json"
         args_file.write_text(json.dumps(action.args, ensure_ascii=False), encoding="utf-8")
         try:
-            timeout = _resolve_timeout(
-                action.args.get("timeout"), max_timeout=ctx.deps.config.max_command_timeout
+            executor = SandboxExecutor(
+                max_output_chars=_MAX_OUTPUT_CHARS,
+                max_timeout=ctx.deps.config.max_command_timeout,
             )
-            return await _run_script(
-                sys.executable, self._script_path, str(args_file),
-                cwd=workspace, timeout=timeout, log_tag=f"custom/{self.name}",
+            return await executor.execute(
+                script_path=str(self._script_path),
+                args_path=str(args_file),
+                timeout=action.args.get("timeout"),
+                log_tag=f"custom/{self.name}",
             )
         finally:
             args_file.unlink(missing_ok=True)
 
 
-def _resolve_timeout(requested, *, max_timeout: int) -> int:
-    try:
-        timeout = int(requested)
-    except (TypeError, ValueError):
-        timeout = _DEFAULT_TIMEOUT
-    return max(1, min(timeout, max_timeout))
-
-
-async def _run_script(*argv: str, cwd, timeout: int, log_tag: str) -> ToolResult:
-    """Прямой create_subprocess_exec с явным argv — без cmd.exe, потому
-    что здесь нет пользовательской shell-строки (см. докстринг модуля)."""
-    started = time.monotonic()
-    env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
-    try:
-        process = await asyncio.create_subprocess_exec(
-            *argv, cwd=str(cwd), env=env,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
-        )
-    except OSError as exc:
-        raise ToolError(f"не удалось запустить инструмент: {exc}") from exc
-
-    try:
-        output_b, _ = await asyncio.wait_for(process.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
-        process.kill()
-        await process.wait()
-        return ToolResult.failure(f"Инструмент не уложился в {timeout} с и был снят")
-
-    duration = time.monotonic() - started
-    output = output_b.decode("utf-8", errors="replace").strip()
-    if len(output) > _MAX_OUTPUT_CHARS:
-        output = output[:_MAX_OUTPUT_CHARS] + "\n… (вывод обрезан)"
-
-    if process.returncode == 0:
-        return ToolResult.success(f"[{log_tag}] выполнено за {duration:.1f} с", output or "(пустой вывод)")
-    return ToolResult.failure(
-        f"[{log_tag}] завершилось с кодом {process.returncode}", output or "(пустой вывод)"
-    )
