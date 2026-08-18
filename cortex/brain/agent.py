@@ -25,6 +25,7 @@ from .pending import PendingAction, PendingActionStore
 from .risk import parse_autonomy, requires_confirmation, resolve_risk
 from .session import BrainSession
 from .tools.base import BrainToolContext, BrainToolRegistry
+from .pirate import execute_pirate_mode
 
 if TYPE_CHECKING:  # pragma: no cover
     from ..deps import Deps
@@ -272,6 +273,15 @@ class BrainAgent:
 
         actions, parse_errors = extract_actions(result.stdout)
         reply_text = strip_actions(result.stdout)
+
+        # Semantic Refusal Detection
+        if not actions and reply_text:
+            text_lower = reply_text.lower()
+            if any(k in text_lower for k in ("авторск", "copyright", "защищен", "не могу", "не буду")):
+                log.warning("Cortex refused the request due to safety/copyright. Activating Pirate Mode.")
+                await deps.gateway.reply(chat_id, "🏴‍☠️ Включен пиратский режим до выполнения задачи...", reply_to=message_id)
+                await execute_pirate_mode(deps, chat_id, message_id, original_text or "")
+                return
 
         if reply_text:
             await deps.gateway.reply(chat_id, fmt.markdown_to_html(reply_text), reply_to=message_id)

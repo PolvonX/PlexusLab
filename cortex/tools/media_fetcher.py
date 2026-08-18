@@ -32,6 +32,8 @@ class MediaFetcherTool(Tool):
             "yt-dlp",
             url,
             "--no-simulate",
+            "--username", "oauth2",
+            "--password", "''",
             "--print", "after_move:filepath",  # Вывести только итоговый путь к файлу
         ]
 
@@ -50,9 +52,48 @@ class MediaFetcherTool(Tool):
                 stderr=asyncio.subprocess.PIPE,
             )
 
+            stdout_lines = []
+            stderr_lines = []
+            
+            async def read_stdout():
+                if process.stdout:
+                    async for line in process.stdout:
+                        line_str = line.decode(errors="replace").strip()
+                        if line_str:
+                            stdout_lines.append(line_str)
+                            
+            async def read_stderr():
+                if process.stderr:
+                    async for line in process.stderr:
+                        line_str = line.decode(errors="replace").strip()
+                        if not line_str:
+                            continue
+                        stderr_lines.append(line_str)
+                        log.debug("yt-dlp stderr: %s", line_str)
+                        
+                        # Detect OAuth2 prompt
+                        if "google.com/device" in line_str and "code" in line_str:
+                            try:
+                                code_part = line_str.split("code")[-1].strip()
+                                if code_part:
+                                    msg = (
+                                        f"⚠️ **YouTube требует авторизацию.**\n\n"
+                                        f"1. Перейдите на: https://www.google.com/device\n"
+                                        f"2. Введите код: `{code_part}`\n\n"
+                                        f"Скачивание продолжится автоматически."
+                                    )
+                                    if hasattr(ctx, "bot") and hasattr(ctx, "chat_id"):
+                                        await ctx.bot.send_message(ctx.chat_id, msg, parse_mode="Markdown")
+                                    else:
+                                        log.info("OAuth prompt detected, but no Telegram context: %s", msg)
+                            except Exception as e:
+                                log.error("Failed to parse OAuth code: %s", e)
+
             try:
-                stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                    process.communicate(), timeout=_DEFAULT_TIMEOUT
+                # Wait for both streams to finish reading and the process to exit
+                await asyncio.wait_for(
+                    asyncio.gather(read_stdout(), read_stderr(), process.wait()), 
+                    timeout=_DEFAULT_TIMEOUT
                 )
             except asyncio.TimeoutError:
                 try:
@@ -64,8 +105,8 @@ class MediaFetcherTool(Tool):
                     f"yt-dlp не уложился в {_DEFAULT_TIMEOUT} с и был снят."
                 )
 
-            stdout = stdout_bytes.decode(errors="replace").strip()
-            stderr = stderr_bytes.decode(errors="replace").strip()
+            stdout = "\n".join(stdout_lines)
+            stderr = "\n".join(stderr_lines)
 
             if process.returncode != 0:
                 log.error("Ошибка yt-dlp (код %s): %s", process.returncode, stderr)
@@ -75,7 +116,7 @@ class MediaFetcherTool(Tool):
                 )
 
             # yt-dlp с флагом --print выведет абсолютный путь к скачанному файлу
-            filepath = stdout.splitlines()[-1] if stdout else "Неизвестный путь"
+            filepath = stdout_lines[-1] if stdout_lines else "Неизвестный путь"
 
             return ToolResult.success(
                 f"Файл успешно скачан.\nПуть: {filepath}",

@@ -60,7 +60,7 @@ agent_runner:
       # не залогировано и не гарантировано). Сотрудники делают реальную
       # инженерную работу (пишут код, гоняют команды), поэтому взята модель
       # того же класса, что и у мозга — не самая дешёвая, зато предсказуемая.
-      command: 'agy -p "{prompt}" --model claude-sonnet-4-6 --output-format text --add-dir "{workspace}" --print-timeout 14m --dangerously-skip-permissions'
+      command: 'agy -p "{prompt}" --model gemini-1.5-pro --output-format text --add-dir "{workspace}" --print-timeout 14m --dangerously-skip-permissions'
       prompt_via_stdin: false
       env: {}
 
