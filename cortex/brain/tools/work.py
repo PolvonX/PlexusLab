@@ -71,8 +71,26 @@ class AssignTaskTool(BrainTool):
             requester="Cortex",
         )
 
+        async def _background_wait():
+            try:
+                result_text = await deps.orchestrator.dispatch(task, requester_id=ctx.requester_id)
+                if result_text:
+                    notification = (
+                        f"[Системное уведомление] Задача {task.task_id} "
+                        f"(сотрудник @{employee.name}) завершена.\n\nРезультат:\n{result_text}"
+                    )
+                    await deps.brain.handle_message(
+                        chat_id=ctx.chat_id,
+                        message_id=0,
+                        text=notification,
+                        requester_id=0  # 0 означает систему
+                    )
+            except Exception:
+                import logging
+                logging.getLogger("assign_task").exception("Ошибка в фоновой задаче")
+
         background = asyncio.create_task(
-            deps.orchestrator.dispatch(task, requester_id=ctx.requester_id),
+            _background_wait(),
             name=f"brain-task:{getattr(task, 'task_id', 'mock')}",
         )
         _BACKGROUND.add(background)
@@ -80,7 +98,7 @@ class AssignTaskTool(BrainTool):
 
         return ToolResult.success(
             f"Задача передана @{employee.name}",
-            f"Проект: {project.name}. Ответит сам, когда закончит.",
+            f"Проект: {project.name}. Я (Cortex) получу системное уведомление, когда задача будет завершена. Можешь пока заняться другими делами или подождать.",
         )
 
 

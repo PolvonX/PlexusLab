@@ -83,55 +83,58 @@ class Orchestrator:
 
     # ------------------------------------------------------------------
     async def dispatch(
-        self, task: AgentTask, *, requester_id: int, _retries: int = 0, _fallback_attempt: int = 0
-    ) -> None:
-        """Поставить задачу в очередь. Ошибки уходят в чат, не в трейсбек.
+        self, task: AgentTask, *, requester_id: int, lock_project: str | None = None, _retries: int = 0, _fallback_attempt: int = 0
+    ) -> str:
+        """Поставить задачу в очередь. Возвращает строковый результат выполнения или ошибку.
 
-        `_retries` — внутренний счётчик авто-ретраев retryable-ошибок после
-        кулдауна; `_fallback_attempt` — сколько fallback-драйверов уже
-        испробовано (0 = основной драйвер). Внешние вызовы их не передают."""
+        `lock_project` — для параллельного DAG-выполнения (чтобы обойти serialize_per_project).
+        `_retries` / `_fallback_attempt` — внутренние счетчики."""
         info = TaskInfo(
             task_id=task.task_id,
             agent=task.employee.name,
-            project=task.project,
+            project=lock_project or task.project,
             instruction=task.instruction[:200],
         )
         fallbacks = self.config.runner_fallback_drivers
         driver = fallbacks[_fallback_attempt - 1] if _fallback_attempt > 0 else None
         try:
-            await self.scheduler.submit(
+            return await self.scheduler.submit(
                 info, lambda: self._execute(task, requester_id=requester_id, driver=driver)
             )
         except AgentRunError as exc:
             if exc.retry_after is not None and _fallback_attempt < len(fallbacks):
-                await self._retry_with_fallback(
+                return await self._retry_with_fallback(
                     task, requester_id=requester_id,
                     retries=_retries, fallback_attempt=_fallback_attempt + 1,
                 )
             elif exc.retry_after is not None and _retries < _MAX_AUTO_RETRIES:
-                await self._retry_after_cooldown(
+                return await self._retry_after_cooldown(
                     task, exc, requester_id=requester_id, retries=_retries + 1
                 )
             else:
-                await self._report_agent_failure(task, exc)
+                return await self._report_agent_failure(task, exc)
         except CortexError as exc:
+            msg = fmt.error_report(exc, context=f"задача {task.task_id}")
             await self.bots.say(
                 task.employee,
                 task.chat_id,
-                fmt.error_report(exc, context=f"задача {task.task_id}"),
+                msg,
                 reply_to=task.message_id,
             )
+            return msg
         except Exception as exc:  # noqa: BLE001 — последний рубеж
             log.exception("Задача %s развалилась", task.task_id)
+            msg = fmt.error_report(exc, context=f"задача {task.task_id}")
             await self.bots.say(
                 task.employee,
                 task.chat_id,
-                fmt.error_report(exc, context=f"задача {task.task_id}"),
+                msg,
                 reply_to=task.message_id,
             )
+            return msg
 
     # ------------------------------------------------------------------
-    async def _execute(self, task: AgentTask, *, requester_id: int, driver=None) -> None:
+    async def _execute(self, task: AgentTask, *, requester_id: int, driver=None) -> str:
         employee = task.employee
         project = self.workspaces.require(task.project)
 
@@ -165,7 +168,7 @@ class Orchestrator:
         finally:
             typing.cancel()
 
-        await self._deliver(task, project_name=project.name, raw_output=result.stdout,
+        return await self._deliver(task, project_name=project.name, raw_output=result.stdout,
                             stderr=result.stderr, requester_id=requester_id)
 
     # ------------------------------------------------------------------
@@ -177,11 +180,13 @@ class Orchestrator:
         raw_output: str,
         stderr: str = "",
         requester_id: int,
-    ) -> None:
+    ) -> str:
         """Разобрать ответ агента: реплика в чат + исполнение действий."""
         employee = task.employee
         actions, parse_errors = extract_actions(raw_output)
         reply = strip_actions(raw_output)
+        
+        final_result = reply or ""
 
         if reply:
             await self.bots.say(
@@ -206,18 +211,20 @@ class Orchestrator:
             if detail:
                 text += "\n\n" + fmt.code_block(detail, limit=800)
             await self.bots.say(employee, task.chat_id, text, reply_to=task.message_id)
+            return text
 
         if parse_errors:
+            error_msg = "⚠️ <b>Cortex не разобрал часть блоков &lt;action&gt;</b>\n\n" + "\n".join(f"• {fmt.esc(err)}" for err in parse_errors)
             await self.bots.say(
                 employee,
                 task.chat_id,
-                "⚠️ <b>Cortex не разобрал часть блоков &lt;action&gt;</b>\n\n"
-                + "\n".join(f"• {fmt.esc(err)}" for err in parse_errors),
+                error_msg,
                 silent=True,
             )
+            final_result += "\n\n" + error_msg
 
         if not actions:
-            return
+            return final_result.strip()
 
         results = await self._run_actions(
             task, actions, project_name=project_name, requester_id=requester_id
@@ -225,6 +232,9 @@ class Orchestrator:
         report = fmt.tool_report(results)
         if report:
             await self.bots.say(employee, task.chat_id, report, silent=True)
+            final_result += f"\n\nОтчёт об инструментах:\n{report}"
+            
+        return final_result.strip()
 
     # ------------------------------------------------------------------
     async def _run_actions(
@@ -278,23 +288,25 @@ class Orchestrator:
         except asyncio.CancelledError:
             pass
 
-    async def _report_agent_failure(self, task: AgentTask, exc: AgentRunError) -> None:
+    async def _report_agent_failure(self, task: AgentTask, exc: AgentRunError) -> str:
         log.error("Задача %s: agy упал — %s", task.task_id, exc)
+        msg = fmt.agent_error_report(
+            agent=task.employee.title,
+            project=task.project,
+            error=exc,
+            stderr_limit=self.config.stderr_report_chars,
+        )
         await self.bots.say(
             task.employee,
             task.chat_id,
-            fmt.agent_error_report(
-                agent=task.employee.title,
-                project=task.project,
-                error=exc,
-                stderr_limit=self.config.stderr_report_chars,
-            ),
+            msg,
             reply_to=task.message_id,
         )
+        return msg
 
     async def _retry_after_cooldown(
         self, task: AgentTask, exc: AgentRunError, *, requester_id: int, retries: int
-    ) -> None:
+    ) -> str:
         """Квота/rate-limit — временная ошибка: ждём кулдаун и сами
         повторяем ту же задачу, а не бросаем её на CEO."""
         wait = exc.retry_after or 0.0
@@ -314,11 +326,11 @@ class Orchestrator:
             reply_to=task.message_id,
         )
         await asyncio.sleep(wait)
-        await self.dispatch(task, requester_id=requester_id, _retries=retries)
+        return await self.dispatch(task, requester_id=requester_id, _retries=retries)
 
     async def _retry_with_fallback(
         self, task: AgentTask, *, requester_id: int, retries: int, fallback_attempt: int
-    ) -> None:
+    ) -> str:
         """Retryable-ошибка и есть неиспробованный fallback-драйвер — пробуем
         его сразу, без ожидания кулдауна (в отличие от _retry_after_cooldown)."""
         fallbacks = self.config.runner_fallback_drivers
@@ -338,6 +350,6 @@ class Orchestrator:
             ),
             reply_to=task.message_id,
         )
-        await self.dispatch(
+        return await self.dispatch(
             task, requester_id=requester_id, _retries=retries, _fallback_attempt=fallback_attempt
         )

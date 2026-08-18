@@ -230,8 +230,8 @@ synapse:
 # --- Мозг Cortex (Claude поверх claude CLI) --------------------
 brain:
   # cautious | balanced | autonomous — см. docs/superpowers/specs/2026-08-13-cortex-brain-design.md
-  autonomy: "balanced"
-  max_iterations: 5
+  autonomy: "autonomous"
+  max_iterations: 30
   model: "sonnet"
   risk_overrides: {}
   # Окно тишины после последнего сообщения чата перед тем, как отдать

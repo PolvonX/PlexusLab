@@ -41,80 +41,75 @@ class SpawnParallelTasksTool(BrainTool):
             task_id_str = str(task_data["id"])
             task_text = str(task_data.get("task", ""))
             
-            # Уникальный ID задачи для логирования и очереди
             unique_task_id = f"{ctx.requester_id}-dag-{task_id_str}"
-            
-            # Мы модифицируем имя проекта в TaskInfo, чтобы обойти лок serialize_per_project 
-            # внутри TaskScheduler, иначе агенты встанут в очередь, а не пойдут параллельно.
-            # Глобальный семафор максимального числа agy при этом все равно будет работать!
             bypass_project_lock_name = f"{project.name}_dag_{task_id_str}"
 
-            info = TaskInfo(
+            agent_task = AgentTask(
+                employee=employee,
+                project=project.name,
+                instruction=task_text,
+                chat_id=ctx.chat_id,
+                message_id=0,
+                requester="Cortex_DAG",
                 task_id=unique_task_id,
-                agent=employee.name,
-                project=bypass_project_lock_name,
-                instruction=task_text[:200],
             )
 
-            async def _run_agent() -> str:
-                agent_task = AgentTask(
-                    employee=employee,
-                    project=project.name,
-                    instruction=task_text,
+            try:
+                # Используем dispatch с lock_project, чтобы задачи шли параллельно,
+                # но при этом имели доступ к инструментам, fallback-ам и ретраям!
+                return await ctx.deps.orchestrator.dispatch(
+                    agent_task, 
+                    requester_id=ctx.requester_id,
+                    lock_project=bypass_project_lock_name
+                )
+            except Exception as exc:
+                raise RuntimeError(str(exc)) from exc
+
+        async def _background_dag():
+            try:
+                executor = DAGExecutor(tasks, runner_func)
+                result_dict = await executor.execute()
+
+                report = [f"Отчет о выполнении DAG ({len(tasks)} задач):", "-" * 40]
+                
+                for t in tasks:
+                    tid = t["id"]
+                    report.append(f"### ЗАДАЧА {tid} ###")
+                    report.append(f"Инструкция: {t.get('task', '')}")
+                    report.append(f"Зависит от: {t.get('depends_on', [])}")
+                    
+                    if tid in result_dict["results"]:
+                        report.append(f"Статус: ✅ ВЫПОЛНЕНА\nРезультат:\n{result_dict['results'][tid]}")
+                    elif tid in result_dict["errors"]:
+                        report.append(f"Статус: ❌ ОШИБКА\nДетали:\n{result_dict['errors'][tid]}")
+                    else:
+                        report.append("Статус: ⚠️ ПРОПУЩЕНА ИЛИ НЕИЗВЕСТНО")
+                    
+                    report.append("-" * 40)
+
+                notification = (
+                    f"[Системное уведомление] Параллельные задачи (DAG) завершены.\n\n"
+                    + "\n".join(report)
+                )
+                
+                await ctx.deps.brain.handle_message(
                     chat_id=ctx.chat_id,
                     message_id=0,
-                    requester="Cortex_DAG",
-                    task_id=unique_task_id,
+                    text=notification,
+                    requester_id=0
                 )
+            except Exception:
+                import logging
+                logging.getLogger("parallel").exception("Ошибка в фоновом выполнении DAG")
 
-                history_block = ctx.deps.orchestrator.history.render(
-                    ctx.chat_id,
-                    limit=ctx.deps.config.history_messages,
-                    budget=ctx.deps.config.history_chars_budget,
-                )
-                prompt = ctx.deps.orchestrator.prompts.build(
-                    agent_task,
-                    project=project,
-                    history_block=history_block,
-                    tools_doc=ctx.deps.tools.docs_for(employee),
-                )
-
-                try:
-                    result = await ctx.deps.orchestrator.runner.run(
-                        prompt=prompt,
-                        workspace=project.path,
-                        agent=employee.name,
-                        project=project.name,
-                        timeout=ctx.deps.config.runner_timeout,
-                    )
-                except AgentRunError as exc:
-                    # AgentRunner.run() бросает AgentRunError при ненулевом коде
-                    # или таймауте — пробрасываем как RuntimeError, чтобы
-                    # DAGExecutor корректно записал ошибку в errors[tid].
-                    raise RuntimeError(str(exc)) from exc
-                return result.stdout
-
-            return await ctx.deps.orchestrator.scheduler.submit(info, _run_agent)
-
-        executor = DAGExecutor(tasks, runner_func)
-        result_dict = await executor.execute()
-
-        report = [f"Отчет о выполнении DAG ({len(tasks)} задач):"]
-        report.append("-" * 40)
+        import asyncio
+        from .work import _BACKGROUND
         
-        for t in tasks:
-            tid = t["id"]
-            report.append(f"### ЗАДАЧА {tid} ###")
-            report.append(f"Инструкция: {t.get('task', '')}")
-            report.append(f"Зависит от: {t.get('depends_on', [])}")
-            
-            if tid in result_dict["results"]:
-                report.append(f"Статус: ✅ ВЫПОЛНЕНА\nРезультат:\n{result_dict['results'][tid]}")
-            elif tid in result_dict["errors"]:
-                report.append(f"Статус: ❌ ОШИБКА\nДетали:\n{result_dict['errors'][tid]}")
-            else:
-                report.append("Статус: ⚠️ ПРОПУЩЕНА ИЛИ НЕИЗВЕСТНО")
-            
-            report.append("-" * 40)
+        background = asyncio.create_task(_background_dag(), name=f"brain-dag-{ctx.chat_id}")
+        _BACKGROUND.add(background)
+        background.add_done_callback(_BACKGROUND.discard)
 
-        return ToolResult.success("Выполнение DAG завершено", "\n".join(report))
+        return ToolResult.success(
+            "DAG-задачи запущены в фоне", 
+            "Я (Cortex) получу системное уведомление со сводным отчетом, когда все ветки завершатся."
+        )

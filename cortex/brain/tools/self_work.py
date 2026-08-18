@@ -81,13 +81,31 @@ class SelfExecuteTaskTool(BrainTool):
             requester="Cortex (сам)",
         )
 
+        async def _background_wait():
+            try:
+                result_text = await deps.orchestrator.dispatch(task, requester_id=ctx.requester_id)
+                if result_text:
+                    notification = (
+                        f"[Системное уведомление] Моя задача (self_execute_task) завершена.\n\n"
+                        f"Результат:\n{result_text}"
+                    )
+                    await deps.brain.handle_message(
+                        chat_id=ctx.chat_id,
+                        message_id=0,
+                        text=notification,
+                        requester_id=0
+                    )
+            except Exception:
+                import logging
+                logging.getLogger("self_work").exception("Ошибка в фоновой задаче")
+
         background = asyncio.create_task(
-            deps.orchestrator.dispatch(task, requester_id=ctx.requester_id),
+            _background_wait(),
             name=f"self-task:{getattr(task, 'task_id', 'mock')}",
         )
         _BACKGROUND.add(background)
         background.add_done_callback(_BACKGROUND.discard)
 
         return ToolResult.success(
-            "Берусь сам", f"Проект: {project.name}. Отчитаюсь, когда закончу."
+            "Берусь сам", f"Проект: {project.name}. Я (Cortex) получу системное уведомление, когда задача будет завершена."
         )
