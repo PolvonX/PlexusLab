@@ -1,7 +1,7 @@
 import asyncio
 from typing import Any
 
-from .base import BaseTool
+from .base import Tool
 from ..models import ToolResult
 from ..logging_setup import get_logger
 
@@ -10,7 +10,7 @@ log = get_logger("media_fetcher")
 _DEFAULT_TIMEOUT = 600  # yt-dlp может работать долго на больших видео
 
 
-class MediaFetcherTool(BaseTool):
+class MediaFetcherTool(Tool):
     """
     Инструмент для скачивания медиа и извлечения аудио с использованием yt-dlp.
     """
